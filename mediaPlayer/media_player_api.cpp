@@ -49,6 +49,14 @@ int CicadaSetListener(playerHandle *pHandle, const playerListener &Listener)
     return 0;
 }
 
+void CicadaSetOnRenderCallBack(playerHandle *pHandle, onRenderFrame cb, void *userData)
+{
+    GET_PLAYER;
+    if (player) {
+        player->SetOnRenderCallBack(cb, userData);
+    }
+}
+
 void CicadaSetComponentCb(playerHandle *pHandle, player_component_type type, void *factory)
 {
     GET_PLAYER;
@@ -401,6 +409,15 @@ void CicadaSetMirrorMode(playerHandle *pHandle, MirrorMode mode)
     }
 }
 
+void CicadaSetVideoBackgroundColor(playerHandle *pHandle, uint32_t color)
+{
+    GET_PLAYER;
+
+    if (player) {
+        player->SetVideoBackgroundColor(color);
+    }
+}
+
 MirrorMode CicadaGetMirrorMode(playerHandle *pHandle)
 {
     GET_PLAYER;
@@ -608,6 +625,14 @@ void CicadaSetBitStreamCb(playerHandle *pHandle, readCB read, seekCB seek, void 
 
     if (player) {
         return player->setBitStreamCb(read, seek, arg);
+    }
+}
+
+void CicadaSetClockRefer(playerHandle *pHandle, clockRefer cb, void *arg)
+{
+    GET_PLAYER;
+    if (player) {
+        return player->setClockRefer(cb,arg);
     }
 }
 

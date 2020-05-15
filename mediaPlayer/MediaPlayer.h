@@ -8,20 +8,20 @@
 #ifndef CicadaPlayer_h
 #define CicadaPlayer_h
 
-#include <stdio.h>
 #include "MediaPlayerConfig.h"
 #include "native_cicada_player_def.h"
+#include <stdio.h>
 
 class AbrManager;
 
 class AbrAlgoStrategy;
 
-#include <string>
-#include <sstream>
-#include <vector>
-#include <mutex>
-#include <utils/AFMediaType.h>
 #include <cacheModule/CacheManager.h>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <utils/AFMediaType.h>
+#include <vector>
 
 #ifdef ANDROID
 
@@ -33,7 +33,7 @@ namespace std {
         os << value;
         return os.str();
     }
-}
+}// namespace std
 #endif
 
 namespace Cicada {
@@ -43,7 +43,8 @@ namespace Cicada {
 
     class IAnalyticsCollectorFactory;
 
-    typedef void(*CicadaLogCallback)(void *userData, int prio, const char *buf);
+    typedef void (*CicadaLogCallback)(void *userData, int prio, const char *buf);
+
 
     class MediaPlayer {
     public:
@@ -53,11 +54,18 @@ namespace Cicada {
 
         ~MediaPlayer();
 
-        static string GetSdkVersion(){
-                return "paas 0.9";//TODO version
+        static string GetSdkVersion()
+        {
+            return "paas 0.9";//TODO version
         }
 
     public:
+        void EnableVideoRenderedCallback(bool enable);
+
+        void SetOnRenderFrameCallback(onRenderFrame cb, void *userData);
+
+        void SetStreamTypeFlags(uint64_t flags);
+
         /*
          * set player listener
          */
@@ -136,7 +144,10 @@ namespace Cicada {
         /*
         * get master clock pts
         */
-        int64_t GetMasterClockPts(); //TODO ??这是什么？
+        int64_t GetMasterClockPts();//TODO ??这是什么？
+
+
+        void SetClockRefer(clockRefer cb, void *arg);
 
         /*
          * get current stream index
@@ -240,6 +251,11 @@ namespace Cicada {
         MirrorMode GetMirrorMode();
 
         /*
+         * set clear color
+         */
+        void SetVideoBackgroundColor(uint32_t color);
+
+        /*
          * set speed of current playing, 0.5-2.0
          */
         void SetSpeed(float speed);
@@ -257,12 +273,12 @@ namespace Cicada {
         /**
    * set auto play
    */
-        void SetAutoPlay(bool bAutoPlay) ;
+        void SetAutoPlay(bool bAutoPlay);
 
         /**
          * get is auto play or not
          */
-        bool IsAutoPlay() ;
+        bool IsAutoPlay();
 
         void Reload();
 
@@ -277,7 +293,7 @@ namespace Cicada {
 
         int GetCurrentStreamMeta(Stream_meta *meta, StreamType type);
 
-        void AddExtSubtitle( const char *uri);
+        void AddExtSubtitle(const char *uri);
 
         void SelectExtSubtitle(int index, bool select);
 
@@ -289,7 +305,10 @@ namespace Cicada {
 
         void GetOption(const char *key, char *value);
 
-        IAnalyticsCollector *GetAnalyticsCollector() { return mCollector; }
+        IAnalyticsCollector *GetAnalyticsCollector()
+        {
+            return mCollector;
+        }
         //
         //        long ApsaraGetPropertyLong(playerHandle *player, int key);
 
@@ -299,14 +318,14 @@ namespace Cicada {
          * set cache config.
          * @param config
          */
-         void SetCacheConfig(const CacheConfig &config);
+        void SetCacheConfig(const CacheConfig &config);
 
         /**
          * get cache url. Should SetCacheConfig before call this.
          * @param URL orignal url
          * @return cached url.
          */
-         string GetCachePathByURL(const string &URL);
+        string GetCachePathByURL(const string &URL);
 
         void SetDefaultBandWidth(int bandWidth);
 
@@ -323,6 +342,8 @@ namespace Cicada {
 
         static void videoSizeChangedCallback(int64_t width, int64_t height, void *userData);
 
+        static void videoRenderedCallback(int64_t timeMs, int64_t pts, void *userData);
+
         static void currentPostionCallback(int64_t position, void *userData);
 
         static void bufferPostionCallback(int64_t position, void *userData);
@@ -335,15 +356,15 @@ namespace Cicada {
 
         static void loadingProgressCallback(int64_t prg, void *userData);
 
-        static void
-        subtitleShowCallback(int64_t index, int64_t size, const void *content, void *userData);
+        static void subtitleShowCallback(int64_t index, int64_t size, const void *content, void *userData);
 
-        static void
-        subtitleHideCallback(int64_t index, int64_t size, const void *content, void *userData);
+        static void subtitleHideCallback(int64_t index, int64_t size, const void *content, void *userData);
 
         static void subtitleExtAddedCallback(int64_t index, const void *url, void *userData);
 
         static void streamChangedSucCallback(int64_t type, const void *Info, void *userData);
+
+        static void PlayerSeeking(int64_t seekInCache, void *userData);
 
         static void PlayerSeekEnd(int64_t seekInCache, void *userData);
 
@@ -353,17 +374,18 @@ namespace Cicada {
 
         static void captureScreenResult(int64_t width, int64_t height, const void *buffer, void *userData);
 
-        static void autoPlayStart(void * userData);
+        static void autoPlayStart(void *userData);
 
         void abrChanged(int stream);
 
-        static void onMediaFrameCallback(void *arg, const unique_ptr<IAFPacket>& frame, StreamType type);
-        void mediaFrameCallback(const unique_ptr<IAFPacket>& frame, StreamType type);
+        static void onMediaFrameCallback(void *arg, const unique_ptr<IAFPacket> &frame, StreamType type);
+        void mediaFrameCallback(const unique_ptr<IAFPacket> &frame, StreamType type);
 
     private:
         void configPlayer(const MediaPlayerConfig *config) const;
 
         void dummyFunction(bool dummy);
+
     protected:
         void *mPlayerHandle = nullptr;
         playerListener mListener{nullptr};
@@ -380,7 +402,7 @@ namespace Cicada {
         bool waitingForStart = false;
         bool waitingForLoop = false;
         string mPlayUrl;
-        CacheManager* mCacheManager = nullptr;
+        CacheManager *mCacheManager = nullptr;
         CacheConfig mCacheConfig;
         PlayerStatus mOldPlayStatus{PLAYER_IDLE};
 
@@ -389,7 +411,7 @@ namespace Cicada {
 
         function<void(const string &)> mPlayUrlChangedCallback = nullptr;
     };
-}
+}// namespace Cicada
 
 
 #endif /* CicadaPlayer_h */

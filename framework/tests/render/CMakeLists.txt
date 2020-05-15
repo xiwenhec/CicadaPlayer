@@ -13,6 +13,8 @@ if (APPLE)
     include(../Apple.cmake)
 endif ()
 
+include(../../${TARGET_PLATFORM}.cmake)
+
 target_sources(renderTest
         PRIVATE
 
@@ -42,6 +44,8 @@ target_link_libraries(renderTest PRIVATE
         crypto
         ${FRAMEWORK_LIBS}
         gtest_main)
+
+target_link_directories(renderTest PRIVATE ${COMMON_LIB_DIR})
 
 if (APPLE)
     target_link_libraries(

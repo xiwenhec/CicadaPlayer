@@ -23,21 +23,24 @@ af_clock::~af_clock()
 
 void af_clock::start()
 {
-    if (mStatus == timer_status_start)
+    if (mStatus == timer_status_start) {
         return;
+    }
 
-    if (mStatus == timer_status_init)
+    if (mStatus == timer_status_init) {
         mStartUs = af_gettime_relative() - mSetUs;
-    else if (mStatus == timer_status_pause)
+    } else if (mStatus == timer_status_pause) {
         mStartUs = af_gettime_relative() - mPauseUs;
+    }
 
     mStatus = timer_status_start;
 }
 
 void af_clock::pause()
 {
-    if (mStatus != timer_status_start)
+    if (mStatus != timer_status_start) {
         return;
+    }
 
     mPauseUs = get();
     mStatus = timer_status_pause;
@@ -45,17 +48,18 @@ void af_clock::pause()
 
 void af_clock::set(int64_t us)
 {
-    if (mStatus == timer_status_start)
+    if (mStatus == timer_status_start) {
         mStartUs = af_gettime_relative() - us;
-    else if (mStatus == timer_status_init)
+    } else if (mStatus == timer_status_init) {
         mSetUs = us;
-    else if (mStatus == timer_status_pause)
+    } else if (mStatus == timer_status_pause) {
         mPauseUs = us;
+    }
 }
 
 int64_t af_clock::get()
 {
-    switch (mStatus) {
+    switch (mStatus.load()) {
         case timer_status_start:
             return af_gettime_relative() - mStartUs;
 
@@ -93,11 +97,12 @@ af_scalable_clock::~af_scalable_clock()
 
 void af_scalable_clock::setSpeed(float speed)
 {
-    if (speed == mScale)
+    if (speed == mScale) {
         return;
+    }
 
     set(get());
-    AF_LOGD("change speed %f --> %f\n", mScale, speed);
+    AF_LOGD("change speed %f --> %f\n", mScale.load(), speed);
     mScale = speed;
 }
 
@@ -127,7 +132,7 @@ void af_scalable_clock::set(int64_t time)
 
 int64_t af_scalable_clock::get()
 {
-    return static_cast<int64_t>(mSetTime + mClock.get() * mScale);
+    return mSetTime + static_cast<int64_t>(mClock.get() * mScale);
 }
 
 float af_scalable_clock::getSpeed()

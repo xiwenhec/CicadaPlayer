@@ -157,6 +157,7 @@ void CicadaOCHelper::getListener(playerListener &listener)
     listener.CaptureScreen = onCaptureScreen;
     listener.SubtitleShow = onShowSubtitle;
     listener.SubtitleHide = onHideSubtitle;
+    listener.VideoRendered = onVideoRendered;
     listener.EventCallback = onEvent;
     listener.ErrorCallback = onError;
     listener.Prepared = onPrepared;
@@ -172,10 +173,25 @@ CicadaPlayer * CicadaOCHelper::getOCPlayer(void *userData)
     return helper->mPlayer;
 }
 
+id<CicadaDelegate> CicadaOCHelper::getDelegate(void *userData)
+{
+    CicadaOCHelper *helper = (CicadaOCHelper *)userData;
+    if (nullptr == helper) {
+        return nil;
+    }
+    return helper->mInnerDelegate;
+}
+
 void CicadaOCHelper::onPrepared(void *userData) {
     __weak CicadaPlayer * player = getOCPlayer(userData);
+    __weak id<CicadaDelegate> theDelegate = getDelegate(userData);
+
     dispatch_async(dispatch_get_main_queue(), ^{
         player.duration = 0; // setDuration will overwrite the value
+        if (theDelegate && [theDelegate respondsToSelector:@selector(onPlayerEvent:eventType:)]) {
+            [theDelegate onPlayerEvent:player eventType:CicadaEventPrepareDone];
+        }
+        
         if (player.delegate && [player.delegate respondsToSelector:@selector(onPlayerEvent:eventType:)]){
             [player.delegate onPlayerEvent:player eventType:CicadaEventPrepareDone];
         }
@@ -237,10 +253,14 @@ void CicadaOCHelper::onVideoSizeChanged(int64_t width, int64_t height, void *use
 
 void CicadaOCHelper::onCurrentPositionUpdate(int64_t position, void *userData) {
     __weak CicadaPlayer * player = getOCPlayer(userData);
+    __weak id<CicadaDelegate> theDelegate = getDelegate(userData);
     dispatch_async(dispatch_get_main_queue(), ^{
         [player setCurrentPosition:position];
         if (player.delegate && [player.delegate respondsToSelector:@selector(onCurrentPositionUpdate:position:)]) {
             [player.delegate onCurrentPositionUpdate:player position:position];
+        }
+        if (theDelegate && [theDelegate respondsToSelector:@selector(onCurrentPositionUpdate:position:)]) {
+            [theDelegate onCurrentPositionUpdate:player position:position];
         }
     });
 }
@@ -409,11 +429,16 @@ void CicadaOCHelper::onAutoPlayStart(void *userData) {
 
 void CicadaOCHelper::onPlayerStatusChanged(int64_t oldStatus, int64_t newStatus, void *userData) {
     __weak CicadaPlayer * player = getOCPlayer(userData);
-    if (player && player.delegate && [player.delegate respondsToSelector:@selector(onPlayerStatusChanged:oldStatus:newStatus:)]) {
-        dispatch_async(dispatch_get_main_queue(), ^{
+    __weak id<CicadaDelegate> theDelegate = getDelegate(userData);
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (theDelegate && [theDelegate respondsToSelector:@selector(onPlayerStatusChanged:oldStatus:newStatus:)]) {
+            [theDelegate onPlayerStatusChanged:player oldStatus:mapStatus(oldStatus) newStatus:mapStatus(newStatus)];
+        }
+
+        if (player && player.delegate && [player.delegate respondsToSelector:@selector(onPlayerStatusChanged:oldStatus:newStatus:)]) {
             [player.delegate onPlayerStatusChanged:player oldStatus:mapStatus(oldStatus) newStatus:mapStatus(newStatus)];
-        });
-    }
+        }
+    });
 }
 
 void CicadaOCHelper::onEvent(int64_t code, const void *msg, void *userData) {
@@ -428,6 +453,16 @@ void CicadaOCHelper::onEvent(int64_t code, const void *msg, void *userData) {
 
             CicadaEventWithString eventCode = (CicadaEventWithString)EventCodeMap::getInstance()->getValue(static_cast<int>(code));
             [player.delegate onPlayerEvent:player eventWithString:(CicadaEventWithString)eventCode description:str];
+        });
+    }
+}
+
+void CicadaOCHelper::onVideoRendered(int64_t theTimeMs, int64_t thePts, void *userData) {
+    __weak CicadaPlayer * player = getOCPlayer(userData);
+
+    if (player.delegate && [player.delegate respondsToSelector:@selector(onVideoRendered:timeMs:pts:)]) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [player.delegate onVideoRendered:player timeMs:theTimeMs pts:thePts];
         });
     }
 }

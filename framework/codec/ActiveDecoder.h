@@ -15,6 +15,7 @@
 
 #include "IDecoder.h"
 #include <queue>
+#include <atomic>
 
 class ActiveDecoder : public Cicada::IDecoder {
 
@@ -37,6 +38,8 @@ public:
 
     int holdOn(bool hold) override;
 
+    int getRecoverQueueSize() override;
+
 private:
 
     virtual int enqueue_decoder(std::unique_ptr<IAFPacket> &pPacket) = 0;
@@ -48,6 +51,8 @@ private:
     virtual void close_decoder() = 0;
 
     virtual void flush_decoder() = 0;
+
+    virtual int get_decoder_recover_size() = 0;
 
 
 private:
@@ -71,23 +76,25 @@ protected:
 protected:
 #if AF_HAVE_PTHREAD
     afThread *mDecodeThread = nullptr;
-    std::atomic_bool  mRunning{false};
+    std::atomic_bool mRunning{false};
 #endif
 private:
 
-    bool bInputEOS{false};
+    std::atomic_bool bInputEOS{false};
     bool bSendEOS2Decoder{};
-    bool bDecoderEOS{false};
+    std::atomic_bool bDecoderEOS{false};
 #if AF_HAVE_PTHREAD
     std::condition_variable mSleepCondition{};
     std::queue<std::unique_ptr<IAFPacket>> mInputQueue{};
     std::queue<std::unique_ptr<IAFFrame>> mOutputQueue{};
-    int maxOutQueueSize = 16;
+    int maxOutQueueSize = 2;
     std::mutex mMutex{};
     std::mutex mSleepMutex{};
+    std::unique_ptr<IAFPacket> mPacket{nullptr};
 #endif
     bool bHolding = false;
     std::queue<std::unique_ptr<IAFPacket>> mHoldingQueue{};
+    enum AFCodecID mCodecId{AF_CODEC_ID_NONE};
 
 };
 

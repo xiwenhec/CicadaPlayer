@@ -17,7 +17,7 @@ set(LIBRARYS ${SRC_LIBRARIES})
 
 link_directories(${SRC_LIBRARIES_DIR})
 add_library(${LIB_NAME} SHARED
-        dummy.c
+        build_version.cpp
         )
 if (IOS)
 set_target_properties(${LIB_NAME} PROPERTIES
@@ -29,12 +29,13 @@ set_target_properties(${LIB_NAME} PROPERTIES
         MACOSX_FRAMEWORK_BUNDLE_VERSION 1
         MACOSX_FRAMEWORK_SHORT_VERSION_STRING 1.0
         INSTALL_NAME_DIR @rpath
+        XCODE_ATTRIBUTE_LD_DYLIB_INSTALL_NAME "@rpath/${LIB_NAME}.framework/${LIB_NAME}"
         #        MACOSX_FRAMEWORK_INFO_PLIST Info.plist
         #        PUBLIC_HEADER dynamicFramework.h
         # XCODE_ATTRIBUTE_CODE_SIGN_IDENTITY "iPhone Developer"
-        XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS[variant=MinSizeRel] YES
+        XCODE_ATTRIBUTE_GCC_GENERATE_DEBUGGING_SYMBOLS YES
         XCODE_ATTRIBUTE_ENABLE_BITCODE "YES"
-        XCODE_ATTRIBUTE_BITCODE_GENERATION_MODE[variant=MinSizeRel] bitcode
+        XCODE_ATTRIBUTE_BITCODE_GENERATION_MODE bitcode
         )
 else ()
     set_target_properties(${LIB_NAME} PROPERTIES
@@ -46,6 +47,7 @@ else ()
             MACOSX_FRAMEWORK_BUNDLE_VERSION 1
             MACOSX_FRAMEWORK_SHORT_VERSION_STRING 1.0
             INSTALL_NAME_DIR @rpath
+            XCODE_ATTRIBUTE_LD_DYLIB_INSTALL_NAME "@rpath/${LIB_NAME}.framework/${LIB_NAME}"
             )
 endif ()
 #if (IOS)
@@ -61,10 +63,3 @@ endif ()
 #    set_xcode_property(${LIB_NAME} BITCODE_GENERATION_MODE bitcode)
 #endif ()
 target_link_libraries(${LIB_NAME} PRIVATE ${LIBRARYS})
-
-add_custom_command(
-        TARGET ${LIB_NAME}
-        POST_BUILD
-        COMMAND install_name_tool -id \"@rpath/${LIB_NAME}.framework/${LIB_NAME}\"
-        $<TARGET_FILE:${LIB_NAME}>
-)

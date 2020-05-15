@@ -182,7 +182,6 @@ void NativeBase::java_SelectTrack(JNIEnv *env, jobject instance, jint index)
     player->SelectTrack(index);
 }
 
-
 void NativeBase::java_Prepare(JNIEnv *env, jobject instance)
 {
     AF_TRACE;
@@ -258,6 +257,18 @@ void NativeBase::java_SeekTo(JNIEnv *env, jobject instance, jlong position, jint
     }
 
     player->SeekTo(position, (SeekMode) mode);
+}
+
+void NativeBase::java_SetMaxAccurateSeekDelta(JNIEnv *env, jobject instance, jint delta)
+{
+    AF_TRACE;
+    MediaPlayer *player = getPlayer(env, instance);
+
+    if (player == nullptr) {
+        return;
+    }
+
+    player->SetOption("maxAccurateSeekDelta", AfString::to_string((int)delta).c_str());
 }
 
 
@@ -791,6 +802,17 @@ jstring NativeBase::java_GetCacheFilePathByURL(JNIEnv *env, jobject instance, js
     return nullptr;
 }
 
+
+void NativeBase::java_SetDefaultBandWidth(JNIEnv *env, jobject instance, jint defaultBandWidth)
+{
+    AF_TRACE;
+    MediaPlayer *player = getPlayer(env, instance);
+
+    if (player != nullptr) {
+        player->SetDefaultBandWidth((int)defaultBandWidth);
+    }
+}
+
 //callback...
 
 void NativeBase::init(JNIEnv *env)
@@ -898,6 +920,7 @@ static JNINativeMethod nativePlayer_method_table[] = {
     {"nSetVolume",              "(F)V",                                    (void *) NativeBase::java_SetVolume},
     {"nGetVolume",              "()F",                                     (void *) NativeBase::java_GetVolume},
     {"nSeekTo",                 "(JI)V",                                   (void *) NativeBase::java_SeekTo},
+    {"nSetMaxAccurateSeekDelta", "(I)V",                                    (void *) NativeBase::java_SetMaxAccurateSeekDelta},
     {"nStop",                   "()V",                                     (void *) NativeBase::java_Stop},
     {"nRelease",                "()V",                                     (void *) NativeBase::java_Release},
     {"nGetDuration",            "()J",                                     (void *) NativeBase::java_GetDuration},
@@ -933,6 +956,7 @@ static JNINativeMethod nativePlayer_method_table[] = {
     {"nGetSdkVersion",          "()Ljava/lang/String;",                    (void *) NativeBase::java_GetSdkVersion},
     {"nSetBlackType",           "(I)V",                                    (void *) NativeBase::java_SetBlackType},
     {"nGetCacheFilePath",       "(Ljava/lang/String;)Ljava/lang/String;",  (void *) NativeBase::java_GetCacheFilePathByURL},
+    {"nSetDefaultBandWidth",    "(I)V",                                                                        (void *) NativeBase::java_SetDefaultBandWidth},
 
 };
 

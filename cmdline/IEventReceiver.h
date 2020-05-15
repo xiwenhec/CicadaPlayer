@@ -22,12 +22,16 @@ public:
 
         virtual void onStepSeek(bool forward) = 0;
 
+        virtual void onPercentageSeek(int percent) = 0;
+
         virtual void onChangeVolume(bool large) = 0;
 
         virtual void onSetView(void *view) = 0;
 
         virtual void onSpeedUp(bool up) = 0;
+        virtual void onPrePare() = 0;
 
+        virtual void onFullScreen(bool full) = 0;
     };
 
     class IEvent {

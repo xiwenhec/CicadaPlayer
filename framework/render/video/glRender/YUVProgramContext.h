@@ -17,13 +17,13 @@ public:
 private:
     int initProgram() override ;
 
-    void *getSurface()  override ;
-
     void updateScale(IVideoRender::Scale scale) override ;
 
     void updateFlip(IVideoRender::Flip flip) override ;
 
     void updateRotate(IVideoRender::Rotate rotate) override ;
+
+    void updateBackgroundColor(uint32_t color) override;
 
     void updateWindowSize(int width, int height, bool windowChanged) override ;
 
@@ -33,9 +33,11 @@ private:
 
     void createYUVTextures();
 
-    void fillDataToYUVTextures(uint8_t **data, int *pLineSize);
+    void fillDataToYUVTextures(uint8_t **data, int *pLineSize, int format);
 
     void bindYUVTextures();
+
+    void getShaderLocations();
 
     void updateUProjection();
 
@@ -73,7 +75,18 @@ private:
     int mYLineSize = 0;
 
     GLuint  mProgram = 0;
-    GLuint  mYUVTextures[3];
+    GLuint mVertShader = 0;
+    GLuint mFragmentShader = 0;
+
+    GLint mProjectionLocation;
+    GLint mColorSpaceLocation;
+    GLint mColorRangeLocation;
+    GLuint mPositionLocation;
+    GLuint mTexCoordLocation;
+    GLuint mYUVTextures[3];
+    GLint mYTexLocation;
+    GLint mUTexLocation;
+    GLint mVTexLocation;
 
     bool mProjectionChanged = false;
     GLfloat mUProjection[4][4];
@@ -93,6 +106,9 @@ private:
     int mColorSpace = 0;
     GLfloat  mUColorRange[3] = {0.0f};
     int mColorRange = 0;
+
+    uint32_t mBackgroundColor = 0xff000000;
+    bool mBackgroundColorChanged = true;
 
 };
 

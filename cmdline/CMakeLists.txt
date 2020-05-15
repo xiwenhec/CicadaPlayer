@@ -2,18 +2,8 @@ cmake_minimum_required(VERSION 3.15)
 project(cicadaPlayer)
 
 set(CMAKE_CXX_STANDARD 11)
-
-#set(USEASAN ON)
-#set(USETSAN ON)
-#set(USEUBSAN ON)
-if (${CMAKE_SYSTEM_NAME} MATCHES "Linux")
-#    set(USEMSAN ON)
-endif ()
-
-if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
-else ()
-    set(CMAKE_CXX_FLAGS "-fprofile-instr-generate -fcoverage-mapping")
-endif ()
+option(CMDLINE_BUILD "build command line example" OFF)
+set(CMDLINE_BUILD ON)
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
     set(TARGET_PLATFORM macOSX)
@@ -23,13 +13,12 @@ elseif (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
     set(TARGET_PLATFORM windows)
 endif ()
 
-# Code Coverage Configuration
-option(CODE_COVERAGE "Enable coverage reporting" OFF)
-
 include(../framework/code_coverage.cmake)
 add_subdirectory(../mediaPlayer mediaPlayer.out)
 
 include(../framework/${TARGET_PLATFORM}.cmake)
+
+include(../framework/module_config.cmake)
 
 list(APPEND SRC_FILE
         cicadaPlayer.cpp
@@ -57,10 +46,17 @@ target_link_libraries(cicadaPlayer PRIVATE
         media_player
         demuxer
         data_source
-        cacheModule
-        muxer
         render
-        videodec
+        videodec)
+if (ENABLE_CACHE_MODULE)
+    target_link_libraries(cicadaPlayer PRIVATE
+            cacheModule)
+endif ()
+if (ENABLE_MUXER)
+    target_link_libraries(cicadaPlayer PRIVATE
+            muxer)
+endif ()
+target_link_libraries(cicadaPlayer PRIVATE
         framework_filter
         framework_utils
         avfilter
@@ -69,9 +65,6 @@ target_link_libraries(cicadaPlayer PRIVATE
         swresample
         avutil
         curl
-        ssl
-        crypto
-        pthread
         ${FRAMEWORK_LIBS})
 if (ENABLE_SDL)
     target_link_libraries(cicadaPlayer PUBLIC
@@ -95,7 +88,27 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             bz2
             )
 endif ()
+
+if (APPLE)
+    target_link_libraries(
+            cicadaPlayer PUBLIC
+            iconv
+            bz2
+            ${FRAMEWORK_LIBS}
+    )
+else ()
+    target_link_libraries(
+            cicadaPlayer PUBLIC
+            ssl
+            crypto
+            pthread
+    )
+endif ()
 target_link_libraries(cicadaPlayer PUBLIC coverage_config)
+if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
+else ()
+    add_subdirectory(example)
+endif ()
 
 if (USEASAN)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer -fsanitize-address-use-after-scope")

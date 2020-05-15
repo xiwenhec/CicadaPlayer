@@ -46,7 +46,7 @@
     NSDictionary *dic = [NSJSONSerialization JSONObjectWithData:jsonData
                                                         options:NSJSONReadingMutableContainers
                                                           error:&error];
-    NSArray *keyArray = @[@"startBufferDuration",@"highBufferDuration",@"maxBufferDuration",@"maxDelayTime",@"networkTimeout",@"maxProbeSize",@"referer",@"httpProxy",@"networkRetryCount"];
+    NSArray *keyArray = @[@"startBufferDuration",@"highBufferDuration",@"maxBufferDuration",@"maxDelayTime",@"networkTimeout",@"referer",@"httpProxy",@"networkRetryCount"];
     NSMutableArray *backArray = [NSMutableArray array];
     for (NSString *key in keyArray) {
         NSString *value = dic[key];
@@ -126,7 +126,7 @@
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSArray *fileList = [fileManager contentsOfDirectoryAtPath:documentPath error:nil];
     NSMutableArray *dirArray = [[NSMutableArray alloc] init];
-    NSArray *suffixArray = @[@"mp4",@"mp3",@"flv",@"mov"];
+    NSArray *suffixArray = @[@"webm", @"mp4",@"mp3",@"flv",@"mov"];
     for (NSString *file in fileList) {
         if ([suffixArray containsObject:[[file pathExtension] lowercaseString]]) {
             NSString *filePath = [NSString stringWithFormat:@"%@/%@",documentPath,file];

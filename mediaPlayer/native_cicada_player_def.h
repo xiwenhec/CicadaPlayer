@@ -43,6 +43,10 @@ typedef enum _StreamType {
     ST_TYPE_SUB,
 } StreamType;
 
+#define VIDEO_FLAG 1 << ST_TYPE_VIDEO
+#define AUDIO_FLAG 1 << ST_TYPE_AUDIO
+#define SUB_FLAG 1 << ST_TYPE_SUB
+
 typedef struct _StreamInfo {
     int streamIndex;
     StreamType type;
@@ -83,6 +87,7 @@ typedef struct playerListener_t {
     playerVoidCallback LoadingEnd;
     playerVoidCallback AutoPlayStart;
 
+    playerType1Callback Seeking;
     playerType1Callback SeekEnd;
     playerType1Callback PositionUpdate;
     playerType1Callback BufferPositionUpdate;
@@ -90,6 +95,7 @@ typedef struct playerListener_t {
 
     playerType12Callback VideoSizeChanged;
     playerType12Callback StatusChanged;
+    playerType12Callback VideoRendered;
 
     playerType13Callback ErrorCallback;
 
@@ -147,6 +153,10 @@ typedef void (*playerMediaFrameCb)(void *arg, const std::unique_ptr<IAFPacket>& 
 typedef int (*readCB)(void *arg, uint8_t *buffer, int size);
 
 typedef int64_t (*seekCB)(void *arg, int64_t offset, int whence);
+
+typedef int64_t(*clockRefer)(void *arg);
+
+typedef bool (*onRenderFrame)(void *userData, IAFFrame *frame);
 
 class ErrorConverter {
 public:

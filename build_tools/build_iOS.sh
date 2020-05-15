@@ -13,8 +13,20 @@ source build_ares.sh
 source build_curl.sh
 CWD=$PWD
 function build_fat_lib(){
+    local lib_names=
+    local searchLibs=$(find install/$1/iOS -name *.a)
+    for searchLib in ${searchLibs}
+    do
+        lib=$(basename $searchLib)
+        [[ $lib_names =~ $lib ]] || lib_names="$lib_names $(basename $searchLib)"
+    done
 
-    local lib_names=$(cd ./install/$1/iOS/${IOS_ARCHS%% *}/lib; ls *.a)
+    if  [[ ! -n "$lib_names" ]] ;then
+        echo "break create $1 fat"
+        return
+    fi
+    echo "lib_names: $lib_names"
+
     local fat_dir=install/$1/iOS/fat/lib
     rm -rf ${fat_dir}
     mkdir -p  ${fat_dir}
@@ -43,7 +55,7 @@ function create_cmake_config(){
 #   echo "find_library(COREVIDEO CoreVideo)" >> $CONFIG_FILE
 #   echo "find_library(COREFOUNDATION CoreFoundation)" >> $CONFIG_FILE
    echo -n "set(SRC_LIBRARIES ${SRC_LIBRARIES}" >> $CONFIG_FILE
-   if [[ "${CURL_SSL_USE_NATIVE}" == "TRUE" ]];then
+   if [[ "${SSL_USE_NATIVE}" == "TRUE" ]];then
        echo -n ' ${SECURITY}' >> $CONFIG_FILE
    fi
    echo -n ' ${AUDIO_TOOL_BOX}' >> $CONFIG_FILE
@@ -56,7 +68,7 @@ function create_cmake_config(){
 }
 #build to ffmpeg
 function build_shared_framework(){
-    if [ -z "${LIB_NAME}" ];then
+    if [[ -z "${LIB_NAME}" ]];then
         export LIB_NAME=ffmpeg
     fi
     SRC_LIBRARIES="$(cd ./install/ffmpeg/iOS/fat/lib; ls)"
@@ -66,19 +78,23 @@ function build_shared_framework(){
     export CPU_FLAGS=
     export LDFLAGS=
 
-    local support_libs="fdk-aac x264 curl openssl librtmp cares"
+    local support_libs="fdk-aac x264 curl openssl librtmp cares dav1d"
 
     SRC_LIBRARIES_DIR="$CWD/install/ffmpeg/iOS/fat/lib"
 
     for support_lib in ${support_libs}
     do
-        if [ -d "install/${support_lib}/iOS/fat/lib" ];then
+        if [[ -d "install/${support_lib}/iOS/fat/lib" ]];then
             SRC_LIBRARIES_DIR="$SRC_LIBRARIES_DIR $CWD/install/${support_lib}/iOS/fat/lib"
             local libs="$(cd install/${support_lib}/iOS/fat/lib; ls)"
             SRC_LIBRARIES="$SRC_LIBRARIES $libs"
         fi
     done
 
+    if [[ -d "${DAV1D_EXTERNAL_DIR}/iOS/fat" ]];then
+        SRC_LIBRARIES_DIR="$SRC_LIBRARIES_DIR ${DAV1D_EXTERNAL_DIR}/iOS/fat/lib"
+        SRC_LIBRARIES="$SRC_LIBRARIES dav1d"
+    fi
 
  #   $CWD/install/openssl/iOS/fat/lib"
     cd ./install/ffmpeg/iOS/
@@ -89,14 +105,15 @@ function build_shared_framework(){
 
     create_cmake_config
 
-    touch dummy.c
+    cp ${BUILD_TOOLS_DIR}/src/build_version.cpp ./
+    sh ${BUILD_TOOLS_DIR}/gen_build_version.sh > version.h
     rm -rf Xcode/
     mkdir -p Xcode/OS
     cd Xcode/OS
     cmake  -DCMAKE_TOOLCHAIN_FILE=${BUILD_TOOLS_DIR}/iOS/iOS.cmake \
     -DIOS_PLATFORM=OS ../../  \
     -G Xcode
-    xcodebuild -destination generic/platform=iOS -configuration Release -target ALL_BUILD
+    xcodebuild -destination generic/platform=iOS -configuration MinSizeRel -target ALL_BUILD
 
     cd -
     mkdir -p Xcode/SIMULATOR64
@@ -105,7 +122,7 @@ function build_shared_framework(){
     -DIOS_PLATFORM=SIMULATOR64 ../../  \
     -G Xcode
 
-    xcodebuild -destination "platform=iOS Simulator" -configuration Release -target ALL_BUILD
+    xcodebuild -destination "platform=iOS Simulator" -configuration MinSizeRel -target ALL_BUILD
 
     return;
 }
@@ -114,4 +131,8 @@ iOS_check_env.sh
 
 build_libs iOS "${IOS_ARCHS}"
 build_fat_libs
-build_shared_framework
+if [[ "${BUILD_SHARED_LIB}" == "FALSE" ]];then
+    echo "skip build shared lib"
+else
+    build_shared_framework
+fi

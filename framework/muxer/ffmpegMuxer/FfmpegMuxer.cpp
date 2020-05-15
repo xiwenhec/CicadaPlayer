@@ -20,7 +20,7 @@ extern "C" {
 
 #define IO_BUFFER_SIZE 32768
 
-
+using namespace std;
 FfmpegMuxer FfmpegMuxer::se(0);
 
 FfmpegMuxer::FfmpegMuxer(string destFilePath, string destFormat)
@@ -39,7 +39,6 @@ FfmpegMuxer::~FfmpegMuxer()
 
     mSourceMetaMap.clear();
     mStreamInfoMap.clear();
-    clearStreamMetas();
 }
 
 int FfmpegMuxer::open()
@@ -54,20 +53,22 @@ int FfmpegMuxer::open()
         return ret;
     }
 
-    for (Stream_meta *item : mStreamMetas) {
-        AVStream *stream = nullptr;
+    if(mStreamMetas != nullptr ) {
+        for (Stream_meta *item : *mStreamMetas) {
+            AVStream *stream = nullptr;
 
-        if (item->type == Stream_type::STREAM_TYPE_VIDEO) {
-            stream = avformat_new_stream(mDestFormatContext, nullptr);
-            MetaToCodec::videoMetaToStream(stream, item);
-            check_codec_tag(stream);
-        } else if (item->type == Stream_type::STREAM_TYPE_AUDIO) {
-            stream = avformat_new_stream(mDestFormatContext, nullptr);
-            MetaToCodec::audioMetaToStream(stream, item);
-            check_codec_tag(stream);
+            if (item->type == Stream_type::STREAM_TYPE_VIDEO) {
+                stream = avformat_new_stream(mDestFormatContext, nullptr);
+                MetaToCodec::videoMetaToStream(stream, item);
+                check_codec_tag(stream);
+            } else if (item->type == Stream_type::STREAM_TYPE_AUDIO) {
+                stream = avformat_new_stream(mDestFormatContext, nullptr);
+                MetaToCodec::audioMetaToStream(stream, item);
+                check_codec_tag(stream);
+            }
+
+            insertStreamInfo(stream, item);
         }
-
-        insertStreamInfo(stream, item);
     }
 
     if (mOpenFunc != nullptr) {
@@ -77,7 +78,7 @@ int FfmpegMuxer::open()
     mIobuf = (uint8_t *) malloc(IO_BUFFER_SIZE);
     mDestFormatContext->pb = avio_alloc_context(mIobuf, IO_BUFFER_SIZE,
                              AVIO_FLAG_WRITE, this,
-                             NULL, io_write, io_seek);
+                             nullptr, io_write, io_seek);
     mDestFormatContext->pb->write_data_type = io_write_data_type;
 
     if (!mSourceMetaMap.empty()) {
@@ -290,37 +291,37 @@ int FfmpegMuxer::io_write_data_type(void *opaque, uint8_t *buf, int size, enum A
                                     int64_t time)
 {
     auto *ffmpegMux = static_cast<FfmpegMuxer *>(opaque);
-    ApsaraDataType dataType = ffmpegMux->mapType(type);
+    DataType dataType = ffmpegMux->mapType(type);
     return ffmpegMux->muxerWriteDataType(buf, size, dataType, time);
 }
 
-ApsaraDataType FfmpegMuxer::mapType(AVIODataMarkerType type)
+IMuxer::DataType FfmpegMuxer::mapType(AVIODataMarkerType type)
 {
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_SYNC_POINT) {
-        return ApsaraDataType::DATA_SYNC_POINT;
+    if (type == AVIO_DATA_MARKER_SYNC_POINT) {
+        return DATA_SYNC_POINT;
     }
 
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_BOUNDARY_POINT) {
-        return ApsaraDataType::DATA_BOUNDARY_POINT;
+    if (type == AVIO_DATA_MARKER_BOUNDARY_POINT) {
+        return DATA_BOUNDARY_POINT;
     }
 
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_FLUSH_POINT) {
-        return ApsaraDataType::DATA_FLUSH_POINT;
+    if (type == AVIO_DATA_MARKER_FLUSH_POINT) {
+        return DATA_FLUSH_POINT;
     }
 
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_HEADER) {
-        return ApsaraDataType::DATA_HEADER;
+    if (type == AVIO_DATA_MARKER_HEADER) {
+        return DATA_HEADER;
     }
 
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_TRAILER) {
-        return ApsaraDataType::DATA_TRAILER;
+    if (type == AVIO_DATA_MARKER_TRAILER) {
+        return DATA_TRAILER;
     }
 
-    if (type == AVIODataMarkerType::AVIO_DATA_MARKER_UNKNOWN) {
-        return ApsaraDataType::DATA_UNKNOWN;
+    if (type == AVIO_DATA_MARKER_UNKNOWN) {
+        return DATA_UNKNOWN;
     }
 
-    return ApsaraDataType::DATA_UNKNOWN;
+    return DATA_UNKNOWN;
 }
 
 void FfmpegMuxer::setOpenFunc(function<void()> func)
@@ -356,7 +357,7 @@ int FfmpegMuxer::muxerWrite(uint8_t *buf, int size)
     }
 }
 
-int FfmpegMuxer::muxerWriteDataType(uint8_t *buf, int size, enum ApsaraDataType type,
+int FfmpegMuxer::muxerWriteDataType(uint8_t *buf, int size, enum DataType type,
                                     int64_t time)
 {
     if (mWriteDataTypeCallback != nullptr) {
@@ -366,28 +367,9 @@ int FfmpegMuxer::muxerWriteDataType(uint8_t *buf, int size, enum ApsaraDataType 
     }
 }
 
-void FfmpegMuxer::setStreamMetas(const vector<Stream_meta *> &streamMetas)
+void FfmpegMuxer::setStreamMetas(const vector<Stream_meta *> *streamMetas)
 {
-    clearStreamMetas();
-
-    if (streamMetas.empty()) {
-        return;
-    }
-
-    for (auto &item : streamMetas) {
-        mStreamMetas.push_back(item);
-    }
-}
-
-void FfmpegMuxer::clearStreamMetas()
-{
-    if (!mStreamMetas.empty()) {
-        for (auto &item : mStreamMetas) {
-            releaseMeta(item);
-        }
-
-        mStreamMetas.clear();
-    }
+    mStreamMetas = streamMetas;
 }
 
 void FfmpegMuxer::addSourceMetas(map<string, string> sourceMetas)

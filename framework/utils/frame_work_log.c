@@ -7,27 +7,27 @@
 #include <pthread.h>
 
 #ifdef  WIN32
-    #include <windows.h>
+#include <windows.h>
 #else
 
-    #include <sys/time.h>
-    #include <unistd.h>
+#include <sys/time.h>
+#include <unistd.h>
 
 #endif
 
 #ifdef __APPLE__
 
-    #include <TargetConditionals.h>
-    #include <string.h>
+#include <TargetConditionals.h>
+#include <string.h>
 
 #endif
 
 #ifdef ANDROID
 
-    #include <android/log.h>
-    #include <string.h>
+#include <android/log.h>
+#include <string.h>
 
-    #define ANDROID_APP_TAG "AliFrameWork"
+#define ANDROID_APP_TAG "AliFrameWork"
 #endif
 
 #include "frame_work_log.h"
@@ -35,7 +35,7 @@
 #undef printf
 
 #ifndef VERSION
-    #define VERSION 0.9
+#define VERSION 0.9
 #endif
 
 #define str(a) #a
@@ -82,6 +82,7 @@ static pthread_mutex_t gLogMutex;
 
 static const char *mtlVer = NULL;
 
+static pthread_once_t once;
 #ifndef ANDROID
 
 pid_t gettid(void)
@@ -265,15 +266,17 @@ static void initLog()
         mtlVer = xstr(VERSION);
     }
 
+#ifdef NDEBUG
+    logCtrl.log_level = AF_LOG_LEVEL_INFO;
+#else
     logCtrl.log_level = AF_LOG_LEVEL_DEBUG;
+#endif
     //     regist_log_call_back(cicada_log_callback);
 }
 
 int __log_print(int prio, const char *tag, const char *fmt, ...)
 {
-    static pthread_once_t once;
     pthread_once(&once, initLog);
-
     if (prio > logCtrl.log_level) {
         return 0;
     }
@@ -321,7 +324,7 @@ void log_set_enable_console(int enable)
 
 void log_set_log_level(int level)
 {
-    initLog();
+    pthread_once(&once, initLog);
     logCtrl.log_level = level;
     // cicada_set_log_level(level);
 }

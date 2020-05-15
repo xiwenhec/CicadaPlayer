@@ -27,6 +27,9 @@ namespace Cicada {
         */
         virtual int SetListener(const playerListener &Listener) = 0;
 
+
+        virtual void SetOnRenderCallBack(onRenderFrame cb, void *userData) = 0;
+
         /*
          *设置显示窗口
          */
@@ -116,6 +119,8 @@ namespace Cicada {
         virtual RotateMode GetRotateMode() = 0;
 
         virtual void SetMirrorMode(MirrorMode mode) = 0;
+
+        virtual void SetVideoBackgroundColor(uint32_t color) = 0;
 
         virtual MirrorMode GetMirrorMode() = 0;
 
@@ -226,6 +231,12 @@ namespace Cicada {
             mBSCbArg = arg;
         }
 
+        virtual void setClockRefer(clockRefer cb, void *arg)
+        {
+            mClockRef = cb;
+            mCRArg = arg;
+        }
+
         virtual int getCurrentStreamMeta(Stream_meta *meta, StreamType type) = 0;
 
         virtual void setErrorConverter(ErrorConverter *converter)
@@ -250,6 +261,8 @@ namespace Cicada {
         readCB mBSReadCb = nullptr;
         seekCB mBSSeekCb = nullptr;
         void *mBSCbArg = nullptr;
+        clockRefer mClockRef = nullptr;
+        void* mCRArg = nullptr;
 
         ErrorConverter *mErrorConverter = nullptr;
     };

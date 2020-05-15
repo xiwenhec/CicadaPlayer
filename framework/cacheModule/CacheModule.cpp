@@ -24,6 +24,7 @@ CacheModule::~CacheModule()
 {
     stop();
     clearStreamMetas();
+    delete mCacheFileRemuxer;
 }
 
 void CacheModule::setCacheConfig(const CacheConfig &config)
@@ -94,6 +95,11 @@ void CacheModule::setErrorCallback(function<void(int, string)> callback)
     mErrorCallback = std::move(callback);
 }
 
+void CacheModule::setResultCallback(function<void(bool)> callback)
+{
+    mResultCallback = std::move(callback);
+}
+
 CacheRet CacheModule::start()
 {
     {
@@ -124,11 +130,32 @@ CacheRet CacheModule::start()
 
         string cacheTmpPath = mCachePath.getCachePath() + TMP_SUFFIX;
         mCacheFileRemuxer = new CacheFileRemuxer(cacheTmpPath, mDescription);
-        mCacheFileRemuxer->setStreamMeta(mStreamMetas);
+        mCacheFileRemuxer->setStreamMeta(&mStreamMetas);
         mCacheFileRemuxer->setErrorCallback([this](int code, string msg) -> void {
-            if (mErrorCallback != nullptr)
-            {
+            if (mErrorCallback != nullptr) {
                 mErrorCallback(code, msg);
+            }
+        });
+        mCacheFileRemuxer->setResultCallback([this](bool success) -> void {
+            const string &cachePath = mCachePath.getCachePath();
+            string cacheTmpFilePath = cachePath + TMP_SUFFIX;
+            if (success) {
+                int ret = FileUtils::Rename(cacheTmpFilePath.c_str(), cachePath.c_str());
+
+                if (ret == 0) {
+                    mCacheRet = CacheStatus::success;
+                } else {
+                    FileUtils::rmrf(cacheTmpFilePath.c_str());
+                    mCacheRet = CacheStatus::fail;
+                }
+            } else {
+                // not completion ,  need delete cached file
+                FileUtils::rmrf(cacheTmpFilePath.c_str());
+                mCacheRet = CacheStatus::fail;
+            }
+
+            if (mResultCallback != nullptr) {
+                mResultCallback(success);
             }
         });
         bool prepareSucced = mCacheFileRemuxer->prepare();
@@ -181,8 +208,7 @@ void CacheModule::addFrame(const unique_ptr<IAFPacket> &frame, StreamType type)
 void CacheModule::streamEnd()
 {
     AF_LOGD("---> streamEnd()");
-    mEos = true;
-    stop();
+    addFrame(nullptr, StreamType::ST_TYPE_UNKNOWN);
 }
 
 void CacheModule::stop()
@@ -199,26 +225,6 @@ void CacheModule::stop()
         if (mCacheFileRemuxer != nullptr) {
             mCacheFileRemuxer->interrupt();
             mCacheFileRemuxer->stop();
-            delete mCacheFileRemuxer;
-            mCacheFileRemuxer = nullptr;
-            const string &cachePath = mCachePath.getCachePath();
-            string cacheTmpPath = cachePath + TMP_SUFFIX;
-
-            if (mEos) {
-                // completion , rename file
-                int ret = FileUtils::Rename(cacheTmpPath.c_str(), cachePath.c_str());
-
-                if (ret == 0) {
-                    mCacheRet = CacheStatus::success;
-                } else {
-                    FileUtils::rmrf(cacheTmpPath.c_str());
-                    mCacheRet = CacheStatus::fail;
-                }
-            } else {
-                // not completion ,  need delete cached file
-                FileUtils::rmrf(cacheTmpPath.c_str());
-                mCacheRet = CacheStatus::fail;
-            }
         }
     }
 }
@@ -227,7 +233,6 @@ void CacheModule::reset()
 {
     AF_LOGD("---> reset()");
     unique_lock<mutex> lock(mStatusMutex);
-    mEos = false;
     mMediaInfoSet = false;
     mCacheRet = CacheStatus::idle;;
     mCacheChecker.reset();
@@ -258,6 +263,7 @@ void CacheModule::clearStreamMetas()
     if (!mStreamMetas.empty()) {
         for (auto &item : mStreamMetas) {
             releaseMeta(item);
+            free(item);
         }
 
         mStreamMetas.clear();

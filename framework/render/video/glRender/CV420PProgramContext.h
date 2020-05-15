@@ -27,11 +27,11 @@ public:
 
     int initProgram() override;
 
-    void *getSurface() override;
-
     void updateScale(IVideoRender::Scale scale) override;
 
     void updateRotate(IVideoRender::Rotate rotate) override;
+
+    void updateBackgroundColor(uint32_t color) override;
 
     void updateWindowSize(int width, int height, bool windowChanged) override;
 
@@ -40,6 +40,8 @@ public:
     int updateFrame(std::unique_ptr<IAFFrame> &frame) override;
 
 private:
+
+    void getShaderLocations();
 
     void updateUProjection();
 
@@ -80,6 +82,15 @@ private:
     int mFrameHeight = 0;
 
     GLuint mCVProgram = 0;
+    GLuint mVertShader = 0;
+    GLuint mFragmentShader = 0;
+    GLint mYLocation = 0;
+    GLint mUVLocation = 0;
+    GLint mProjectionLocation = 0;
+    GLint mColorSpaceLocation = 0;
+    GLint mColorRangeLocation = 0;
+    GLuint mPositionLocation = 0;
+    GLuint mTexCoordLocation = 0;
 
     bool mProjectionChanged = false;
     GLfloat mUProjection[4][4];
@@ -99,6 +110,9 @@ private:
     int mColorSpace = 0;
     GLfloat  mUColorRange[3] = {0.0f};
     int mColorRange = 0;
+
+    uint32_t mBackgroundColor = 0xff000000;
+    bool mBackgroundColorChanged = true;
 
 };
 

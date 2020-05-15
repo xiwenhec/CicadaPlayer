@@ -156,6 +156,40 @@ typedef enum CicadaPropertyKey: NSUInteger {
     CICADA_KEY_CONNECT_INFO  = 1,
 } CicadaPropertyKey;
 
+typedef enum CicadaOption: NSUInteger {
+    /**
+     * @brief 渲染的fps。类型为Float
+     */
+    /****
+     * @brief render fps. Return value type is Float
+     */
+    CICADA_OPTION_RENDER_FPS = 0,
+} CicadaOption;
+
+typedef enum CicadaPlaybackType: NSUInteger {
+    /**
+     * @brief 播放音视频，默认值
+     */
+    /****
+     * @brief play video & audio, default
+     */
+    CicadaPlaybackTypeALL = 0,
+    /**
+     * @brief 播放视频
+     */
+    /****
+     * @brief play video
+     */
+    CicadaPlaybackTypeVideo = 1,
+    /**
+     * @brief 播放音频
+     */
+    /****
+     * @brief play audio
+     */
+    CicadaPlaybackTypeAudio = 2,
+} CicadaPlaybackType;
+
 /**
  @brief CicadaErrorModel为播放错误信息描述
  */

@@ -13,6 +13,7 @@ if (APPLE)
     include(../Apple.cmake)
 endif ()
 
+include(../../${TARGET_PLATFORM}.cmake)
 target_sources(decoderUnitTest
         PRIVATE
         decoderUnitTest.cpp
@@ -21,7 +22,7 @@ target_sources(decoderUnitTest
 target_include_directories(
         decoderUnitTest
         PRIVATE
-        ../../../plugin
+        ../../
 )
 
 target_link_libraries(
@@ -37,10 +38,10 @@ target_link_libraries(
         swscale
         z
         curl
-        ssl
-        crypto
         gtest_main
         ${FRAMEWORK_LIBS})
+
+target_link_directories(decoderUnitTest PRIVATE ${COMMON_LIB_DIR})
 
 if (APPLE)
     target_link_libraries(
@@ -53,6 +54,8 @@ else ()
     target_link_libraries(
             decoderUnitTest PUBLIC
             dl
+            ssl
+            crypto
             pthread
     )
 

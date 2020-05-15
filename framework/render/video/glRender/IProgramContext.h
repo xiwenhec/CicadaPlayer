@@ -42,13 +42,20 @@ public:
 
     virtual int initProgram() = 0;
 
-    virtual void *getSurface() = 0;
+    virtual void createSurface() {
+    }
+
+    virtual void *getSurface() {
+        return nullptr;
+    };
 
     virtual void updateScale(IVideoRender::Scale scale) = 0;
 
     virtual void updateFlip(IVideoRender::Flip flip) = 0;
 
     virtual void updateRotate(IVideoRender::Rotate rotate) = 0;
+
+    virtual void updateBackgroundColor(uint32_t color) = 0;
 
     virtual void updateWindowSize(int width, int height, bool windowChanged) = 0;
 

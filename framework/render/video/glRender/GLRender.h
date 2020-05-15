@@ -21,7 +21,7 @@
 
 #endif
 
-using  namespace Cicada;
+using namespace Cicada;
 
 
 #if TARGET_OS_IPHONE
@@ -45,6 +45,8 @@ public:
 
     int clearScreen() override;
 
+    void setBackgroundColor(unsigned int color) override;
+
     int renderFrame(std::unique_ptr<IAFFrame> &frame) override;
 
     void setRenderResultCallback(std::function<void(int64_t, bool)> renderResultCallback) override;
@@ -62,6 +64,8 @@ public:
     void *getSurface() override;
 
     float getRenderFPS() override;
+
+    void surfaceChanged() override;
 
 private:
 
@@ -91,21 +95,24 @@ private:
 
     void calculateFPS(int64_t tick);
 
-    IProgramContext *getProgram(int frameFormat , IAFFrame *frame = nullptr);
+    IProgramContext *getProgram(int frameFormat, IAFFrame *frame = nullptr);
+
+    int onVsyncInner(int64_t tick);
 
 protected:
 
-    Rotate mVideoRotate = Rotate_None;
-    Rotate mRotate = Rotate_None;
-    Flip mFlip = Flip_None;
-    Scale mScale = Scale_AspectFit;
+    std::atomic<Rotate> mVideoRotate{Rotate_None};
+    std::atomic<Rotate> mRotate{Rotate_None};
+    std::atomic<Flip> mFlip{Flip_None};
+    std::atomic<Scale> mScale{Scale_AspectFit};
+    std::atomic<uint32_t> mBackgroundColor{0xff000000};
 
     int mWindowWidth = 0;
     int mWindowHeight = 0;
 
 private:
 
-    int mInitRet = INT32_MIN;
+    std::atomic_int mInitRet{INT32_MIN};
     std::mutex mInitMutex;
     std::condition_variable mInitCondition;
     std::mutex mFrameMutex;
@@ -137,6 +144,11 @@ private:
     bool mClearScreenOn = false;
 
     std::function<void(int64_t,bool)> mRenderResultCallback = nullptr;
+
+#ifdef __ANDROID__
+    std::mutex mRenderCallbackMutex{};
+    std::condition_variable mRenderCallbackCon{};
+#endif
 
 };
 

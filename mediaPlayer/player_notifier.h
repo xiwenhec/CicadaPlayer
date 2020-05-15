@@ -76,6 +76,10 @@ namespace Cicada {
 
         void NotifyAutoPlayStart();
 
+        void NotifyVideoRendered(int64_t timeMs, int64_t pts);
+
+        void NotifySeeking(bool seekInCache);
+
     private:
 
         void NotifyVoidEvent(playerVoidCallback listener);

@@ -83,6 +83,13 @@ public:
      */
     virtual int clearScreen() = 0;
 
+    /*
+     * set background color
+     */
+    virtual void setBackgroundColor(uint32_t color) {
+
+    };
+
     /**
      * set want draw frame.
      * @param frame
@@ -128,6 +135,10 @@ public:
 
     }
 
+    virtual void surfaceChanged() {
+
+    }
+
     virtual void enterForeground(){
 
     }
@@ -153,7 +164,7 @@ public:
 
     virtual void captureScreen(std::function<void(uint8_t *, int, int)> func)
     {
-
+        func(nullptr,0,0);
     }
 
 

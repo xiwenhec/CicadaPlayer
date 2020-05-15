@@ -39,18 +39,23 @@ CacheFileRemuxer::~CacheFileRemuxer()
     }
 
     mFrameInfoQueue.clear();
-    clearStreamMetas();
 }
 
 void CacheFileRemuxer::addFrame(const unique_ptr<IAFPacket> &frame, StreamType type)
 {
-    FrameInfo *info = new FrameInfo();
-    info->frame = frame->clone();
-    info->type = type;
-    {
-        std::unique_lock<mutex> lock(mQueueMutex);
-        mFrameInfoQueue.push_back(std::unique_ptr<FrameInfo>(info));
-        mQueueCondition.notify_one();
+    if (frame == nullptr) {
+        mFrameEof = true;
+    } else {
+        mFrameEof = false;
+
+        FrameInfo *info = new FrameInfo();
+        info->frame = frame->clone();
+        info->type = type;
+        {
+            std::unique_lock<mutex> lock(mQueueMutex);
+            mFrameInfoQueue.push_back(std::unique_ptr<FrameInfo>(info));
+            mQueueCondition.notify_one();
+        }
     }
 }
 
@@ -112,29 +117,38 @@ int CacheFileRemuxer::muxThreadRun()
         mMuxer = IMuxerPrototype::create(mDestFilePath, "mp4", mDescription);
         mDestFileCntl = new FileCntl(mDestFilePath);
     }
+
+    if (mMuxer == nullptr) {
+        sendError(CACHE_ERROR_ENCRYPT_CHECK_FAIL);
+        return -1;
+    }
+
     initMuxer();
     int openRet = mMuxer->open();
 
     if (openRet != 0) {
         AF_LOGE("muxThreadRun() mMuxer->open() fail...ret = %d ", openRet);
-
         //open fail..
-        if (mErrorCallback != nullptr) {
-            const CacheRet &cacheInfoType = CACHE_ERROR_MUXER_OPEN;
-            mErrorCallback(cacheInfoType.mCode, cacheInfoType.mMsg);
-        }
-
+        sendError(CACHE_ERROR_MUXER_OPEN);
         return -1;
     }
 
+    bool hasError = false;
+
     while (true) {
-        FrameInfo frameInfo;
         {
             std::unique_lock<mutex> lock(mQueueMutex);
 
             if (mFrameInfoQueue.empty()) {
+
+                if (mFrameEof) {
+                    AF_LOGW("muxThreadRun() mFrameEof...");
+                    break;
+                }
+
                 mQueueCondition.wait_for(lock, std::chrono::milliseconds(10),
-                [this]() { return this->mInterrupt || this->mWantStop; });
+                                         [this]() { return this->mInterrupt || this->mWantStop || this->mFrameEof; });
+
             } else {
                 unique_ptr<FrameInfo> &frameInfo = mFrameInfoQueue.front();
                 int ret = mMuxer->muxPacket(move(frameInfo->frame));
@@ -143,34 +157,42 @@ int CacheFileRemuxer::muxThreadRun()
                 if (ret < 0) {
                     AF_LOGW("muxThreadRun() mMuxer error ret = %d ", ret);
 
-                    if (mErrorCallback != nullptr) {
-                        //no space error .
-                        if (ENOSPC == errno) {
-                            const CacheRet &cacheInfoType = CACHE_ERROR_NO_SPACE;
-                            mErrorCallback(cacheInfoType.mCode, cacheInfoType.mMsg);
-                            break;
-                        }
+                    //no space error .
+                    if (ENOSPC == errno) {
+                        hasError = true;
+                        sendError(CACHE_ERROR_NO_SPACE);
+                        break;
                     }
                 }
             }
         }
-        {
-            if (mInterrupt || mWantStop) {
-                AF_LOGW("muxThreadRun() mInterrupt || mWantStop...");
-                break;
-            }
+
+        if (mInterrupt || mWantStop) {
+            AF_LOGW("muxThreadRun() mInterrupt || mWantStop...");
+            break;
         }
     }
 
     int ret = mMuxer->close();
-
     if (ret < 0) {
         AF_LOGW("muxThreadRun() mMuxer close ret = %d ", ret);
+        hasError = true;
+        sendError(CACHE_ERROR_MUXER_CLOSE);
+    }
 
-        if (mErrorCallback != nullptr) {
-            const CacheRet &cacheInfoType = CACHE_ERROR_MUXER_CLOSE;
-            mErrorCallback(cacheInfoType.mCode, cacheInfoType.mMsg);
-        }
+    if (hasError) {
+        return -1;
+    }
+
+    bool muxSuccess = false;
+    if (mInterrupt || mWantStop) {
+        muxSuccess = false;
+    } else if (mFrameEof) {
+        muxSuccess = true;
+    }
+
+    if (mResultCallback != nullptr) {
+        mResultCallback(muxSuccess);
     }
 
     AF_LOGD("muxThreadRun() end...");
@@ -227,7 +249,7 @@ int CacheFileRemuxer::io_write(void *opaque, uint8_t *buf, int size)
 }
 
 int CacheFileRemuxer::io_write_data_type(void *opaque, uint8_t *buf, int size,
-        enum ApsaraDataType type, int64_t time)
+        IMuxer::DataType type, int64_t time)
 {
     return io_write(opaque, buf, size);
 }
@@ -243,26 +265,22 @@ void CacheFileRemuxer::setErrorCallback(function<void(int, string)> callback)
     mErrorCallback = callback;
 }
 
-void CacheFileRemuxer::setStreamMeta(const vector<Stream_meta *> &streamMetas)
+void CacheFileRemuxer::setResultCallback(function<void(bool)> callback)
 {
-    clearStreamMetas();
+    mResultCallback = callback;
+}
 
-    if (streamMetas.empty()) {
-        return;
-    }
+void CacheFileRemuxer::setStreamMeta(const vector<Stream_meta *> *streamMetas)
+{
+    mStreamMetas = streamMetas;
+}
 
-    for (auto &item : streamMetas) {
-        mStreamMetas.push_back(item);
+void CacheFileRemuxer::sendError(const CacheRet &ret)
+{
+    mRemuxSuc = false;
+
+    if (mErrorCallback != nullptr) {
+        mErrorCallback(ret.mCode, ret.mMsg);
     }
 }
 
-void CacheFileRemuxer::clearStreamMetas()
-{
-    if (!mStreamMetas.empty()) {
-        for (auto &item : mStreamMetas) {
-            releaseMeta(item);
-        }
-
-        mStreamMetas.clear();
-    }
-}

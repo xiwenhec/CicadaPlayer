@@ -15,7 +15,17 @@ void AVAFPacket::copyInfo()
     mInfo.pts = mpkt->pts;
     mInfo.dts = mpkt->dts;
     // TODO: redefine the flags
-    mInfo.flags = mpkt->flags;
+    mInfo.flags = 0;
+    if (mpkt->flags & AV_PKT_FLAG_KEY) {
+        mInfo.flags |= AF_PKT_FLAG_KEY;
+    }
+    if (mpkt->flags & AV_PKT_FLAG_CORRUPT) {
+        mInfo.flags |= AF_PKT_FLAG_CORRUPT;
+    }
+    if (mpkt->flags & AV_PKT_FLAG_DISCARD) {
+        setDiscard(true);
+    }
+
     mInfo.streamIndex = mpkt->stream_index;
     mInfo.timePosition = INT64_MIN;
     mInfo.pos = mpkt->pos;
@@ -64,7 +74,7 @@ int64_t AVAFPacket::getSize()
     return mpkt->size;
 }
 
-const AVPacket *AVAFPacket::ToAVPacket()
+AVPacket *AVAFPacket::ToAVPacket()
 {
     return mpkt;
 }
@@ -95,7 +105,7 @@ AVAFFrame::AVAFFrame(AVFrame **frame, IAFFrame::FrameType type) : mType(type)
 
 
 AVAFFrame::AVAFFrame(AVFrame *frame, FrameType type) : mAvFrame(av_frame_clone(frame)),
-    mType(type)
+                                                       mType(type)
 {
     assert(mAvFrame != nullptr);
     copyInfo();

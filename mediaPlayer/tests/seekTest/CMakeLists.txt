@@ -13,6 +13,8 @@ if (APPLE)
     include(../../../framework/tests/Apple.cmake)
 endif ()
 
+include(../../../framework/${TARGET_PLATFORM}.cmake)
+
 add_executable(mediaPlayerSeekTest "")
 
 target_sources(mediaPlayerSeekTest
@@ -40,9 +42,6 @@ target_link_libraries(mediaPlayerSeekTest PRIVATE
         swresample
         avutil
         curl
-        ssl
-        crypto
-        pthread
         ${FRAMEWORK_LIBS}
         gtest_main)
 
@@ -73,6 +72,23 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             bz2
             iconv
             )
+endif ()
+
+if (APPLE)
+    target_link_libraries(
+            mediaPlayerSeekTest PUBLIC
+            iconv
+            bz2
+            ${FRAMEWORK_LIBS}
+    )
+else ()
+    target_link_libraries(
+            mediaPlayerSeekTest PUBLIC
+            dl
+            ssl
+            crypto
+            pthread
+    )
 endif ()
 
 if (HAVE_COVERAGE_CONFIG)

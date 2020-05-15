@@ -7,6 +7,7 @@
 
 
 #include "IMuxer.h"
+#include <base/prototype.h>
 
 class CICADA_CPLUS_EXTERN IMuxerPrototype {
     static IMuxerPrototype *muxerPrototypeQueue[10];
@@ -14,15 +15,15 @@ class CICADA_CPLUS_EXTERN IMuxerPrototype {
 public:
     virtual ~IMuxerPrototype() = default;
 
-    static IMuxer* create(const string& destPath , const string& destFormat, const string& description);
+    static IMuxer* create(const std::string& destPath , const std::string& destFormat, const std::string& description);
 
 protected:
     static void addPrototype(IMuxerPrototype *se);
 
 private:
-    virtual IMuxer *clone(const string& destPath , const string& destFormat, const string& description) = 0;
+    virtual IMuxer *clone(const std::string& destPath , const std::string& destFormat, const std::string& description) = 0;
 
-    virtual bool is_supported(const string& destPath , const string& destFormat, const string& description) = 0;
+    virtual int probeScore(const std::string& destPath , const std::string& destFormat, const std::string& description) = 0;
 
 };
 

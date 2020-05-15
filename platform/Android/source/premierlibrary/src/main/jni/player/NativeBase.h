@@ -67,6 +67,8 @@ public:
 
     static void java_SeekTo(JNIEnv *env, jobject instance, jlong position, jint mode);
 
+    static void java_SetMaxAccurateSeekDelta(JNIEnv *env, jobject instance, jint delta);
+
     static void java_Stop(JNIEnv *env, jobject instance);
 
     static void java_Release(JNIEnv *env, jobject instance);
@@ -137,6 +139,7 @@ public:
 
     static jstring java_GetCacheFilePathByURL(JNIEnv *env, jobject instance, jstring URL);
 
+    static void java_SetDefaultBandWidth(JNIEnv *env , jobject instance , jint defaultBandWidth);
 public:
     static void jni_onError(int64_t code, const void *msg, /*void *extra, */void *userData);
 

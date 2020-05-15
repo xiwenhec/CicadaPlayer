@@ -45,9 +45,9 @@ namespace Cicada {
         RotateMode rotateMode = RotateMode::ROTATE_MODE_0;
         MirrorMode mirrorMode = MirrorMode::MIRROR_MODE_NONE;
         int64_t mAutoSwitchTime{INT64_MIN};
-        float mVolume{1.0};
+        atomic<float> mVolume{1.0};
         playerListener mPlayerListener;
-        float rate = 1.0;
+        atomic<float> rate {1.0};
         std::string http_proxy = "";
         std::vector<std::string> customHeaders;
         bool clearShowWhenStop = false;
@@ -56,6 +56,11 @@ namespace Cicada {
         int64_t AnalyticsID = -1;
         int mDefaultBandWidth = 0;
         playerOptions mOptions;
+        uint32_t mVideoBackgroundColor = 0xFF000000;
+        bool bEnableVRC = false;
+        int maxASeekDelta = 21 * 1000 * 1000;//us
+
+        int maxVideoRecoverSize;
     };
 }
 

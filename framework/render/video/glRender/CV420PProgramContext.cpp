@@ -11,6 +11,7 @@
 
 #include "platform/platform_gl.h"
 #include <utils/timer.h>
+#include <render/video/glRender/base/utils.h>
 
 static const char CV_VERTEX_SHADER[] = R"(
         attribute vec2 a_position;
@@ -57,6 +58,14 @@ CV420PProgramContext::CV420PProgramContext(void *context) {
 }
 
 CV420PProgramContext::~CV420PProgramContext() {
+    glDisableVertexAttribArray(mPositionLocation);
+    glDisableVertexAttribArray(mTexCoordLocation);
+    glDetachShader(mCVProgram, mVertShader);
+    glDetachShader(mCVProgram, mFragmentShader);
+    glDeleteShader(mVertShader);
+    glDeleteShader(mFragmentShader);
+    glDeleteProgram(mCVProgram);
+
     if (mTextureCache != nullptr) {
         CFRelease(mTextureCache);
     }
@@ -74,8 +83,6 @@ int CV420PProgramContext::initProgram() {
     AF_LOGD("createProgram ");
     mCVProgram = glCreateProgram();
 
-    GLuint mVertShader = 0;
-    GLuint mFragmentShader = 0;
     int mInitRet = compileShader(&mVertShader, CV_VERTEX_SHADER, GL_VERTEX_SHADER);
 
     if (mInitRet != 0) {
@@ -96,10 +103,6 @@ int CV420PProgramContext::initProgram() {
 
     GLint status;
     glGetProgramiv(mCVProgram, GL_LINK_STATUS, &status);
-    glDetachShader(mCVProgram, mVertShader);
-    glDetachShader(mCVProgram, mFragmentShader);
-    glDeleteShader(mVertShader);
-    glDeleteShader(mFragmentShader);
 
     if (status != GL_TRUE) {
         int length = 0;
@@ -109,11 +112,13 @@ int CV420PProgramContext::initProgram() {
         return -1;
     }
 
-    return 0;
-}
+    glUseProgram(mCVProgram);
+    getShaderLocations();
 
-void *CV420PProgramContext::getSurface() {
-    return nullptr;
+    glEnableVertexAttribArray(mPositionLocation);
+    glEnableVertexAttribArray(mTexCoordLocation);
+
+    return 0;
 }
 
 void CV420PProgramContext::updateScale(IVideoRender::Scale scale) {
@@ -134,6 +139,13 @@ void CV420PProgramContext::updateRotate(IVideoRender::Rotate rotate) {
     if (mRotate != rotate) {
         mRotate = rotate;
         mRegionChanged = true;
+    }
+}
+
+void CV420PProgramContext::updateBackgroundColor(uint32_t color) {
+    if(color != mBackgroundColor) {
+        mBackgroundColorChanged = true;
+        mBackgroundColor = color;
     }
 }
 
@@ -180,6 +192,11 @@ int CV420PProgramContext::updateFrame(std::unique_ptr<IAFFrame> &frame) {
         }
     }
 
+    if (frame == nullptr && !mProjectionChanged && !mRegionChanged && !mCoordsChanged) {
+        //frame is null and nothing changed , don`t need redraw. such as paused.
+        return -1;
+    }
+
     if (mProjectionChanged) {
         updateUProjection();
         mProjectionChanged = false;
@@ -197,7 +214,12 @@ int CV420PProgramContext::updateFrame(std::unique_ptr<IAFFrame> &frame) {
 
     int64_t t2 = af_getsteady_ms();
     glViewport(0, 0, mWindowWidth, mWindowHeight);
-    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    if(mBackgroundColorChanged) {
+        float color[4]={0.0f,0.0f,0.0f,1.0f};
+        cicada::convertToGLColor(mBackgroundColor , color);
+        glClearColor(color[0], color[1], color[2], color[3]);
+        mBackgroundColorChanged = false;
+    }
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUseProgram(mCVProgram);
@@ -254,9 +276,7 @@ int CV420PProgramContext::updateFrame(std::unique_ptr<IAFFrame> &frame) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        GLint yLocation = glGetUniformLocation(mCVProgram, "uTxtY");
-        glUniform1i(yLocation, 0);
+        glUniform1i(mYLocation, 0);
     }
 
     {
@@ -268,35 +288,18 @@ int CV420PProgramContext::updateFrame(std::unique_ptr<IAFFrame> &frame) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-
-        GLint uvLocation = glGetUniformLocation(mCVProgram, "uTxtUV");
-        glUniform1i(uvLocation, 1);
+        glUniform1i(mUVLocation, 1);
     }
 
     int64_t t5 = af_getsteady_ms();
-    GLint location = glGetUniformLocation(mCVProgram, "u_projection");
-    glUniformMatrix4fv(location, 1, GL_FALSE, (GLfloat *) mUProjection);
-    
-    GLint colorSpace = glGetUniformLocation(mCVProgram, "uColorSpace");
-    glUniformMatrix3fv(colorSpace, 1, GL_FALSE, (GLfloat *) mUColorSpace);
-
-    GLint colorRange = glGetUniformLocation(mCVProgram, "uColorRange");
-    glUniform3f(colorRange, mUColorRange[0], mUColorRange[1], mUColorRange[2]);
-
-    GLuint positionIndex = static_cast<GLuint>(glGetAttribLocation(mCVProgram, "a_position"));
-    GLuint texCoordIndex = static_cast<GLuint>(glGetAttribLocation(mCVProgram, "a_texCoord"));
-
-    glEnableVertexAttribArray(positionIndex);
-    glEnableVertexAttribArray(texCoordIndex);
-
-    glVertexAttribPointer(positionIndex, 2, GL_FLOAT, GL_FALSE, 0, mDrawRegion);
-    glVertexAttribPointer(texCoordIndex, 2, GL_FLOAT, GL_FALSE, 0, mFlipCoords);
+    glUniformMatrix4fv(mProjectionLocation, 1, GL_FALSE, (GLfloat *) mUProjection);
+    glUniformMatrix3fv(mColorSpaceLocation, 1, GL_FALSE, (GLfloat *) mUColorSpace);
+    glUniform3f(mColorRangeLocation, mUColorRange[0], mUColorRange[1], mUColorRange[2]);
+    glVertexAttribPointer(mPositionLocation, 2, GL_FLOAT, GL_FALSE, 0, mDrawRegion);
+    glVertexAttribPointer(mTexCoordLocation, 2, GL_FLOAT, GL_FALSE, 0, mFlipCoords);
 
     int64_t t6 = af_getsteady_ms();
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-    glDisableVertexAttribArray(positionIndex);
-    glDisableVertexAttribArray(texCoordIndex);
 
     int64_t t7 = af_getsteady_ms();
     if (t7 - t1 > 100) {
@@ -521,4 +524,14 @@ void CV420PProgramContext::updateColorSpace() {
         mUColorSpace[8] = 0.0f;
 
     }
+}
+
+void CV420PProgramContext::getShaderLocations() {
+    mYLocation = glGetUniformLocation(mCVProgram, "uTxtY");
+    mUVLocation = glGetUniformLocation(mCVProgram, "uTxtUV");
+    mProjectionLocation = glGetUniformLocation(mCVProgram, "u_projection");
+    mColorSpaceLocation = glGetUniformLocation(mCVProgram, "uColorSpace");
+    mColorRangeLocation = glGetUniformLocation(mCVProgram, "uColorRange");
+    mPositionLocation = static_cast<GLuint>(glGetAttribLocation(mCVProgram, "a_position"));
+    mTexCoordLocation = static_cast<GLuint>(glGetAttribLocation(mCVProgram, "a_texCoord"));
 }

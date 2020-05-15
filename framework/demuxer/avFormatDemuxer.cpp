@@ -22,7 +22,6 @@ extern "C" {
 #include "play_list/HlsParser.h"
 
 using namespace std;
-static const int MAX_QUEUE_SIZE = 60; // about 500ms  video and audio packet
 namespace Cicada {
     static const int INITIAL_BUFFER_SIZE = 32768;
 
@@ -80,7 +79,7 @@ namespace Cicada {
         int64_t startTime = af_getsteady_ms();
         bool use_filename = false;
 
-        if (mReadCb != nullptr) {
+        if (mReadCb != nullptr ) {
             uint8_t *read_buffer = static_cast<uint8_t *>(av_malloc(INITIAL_BUFFER_SIZE));
             mPInPutPb = avio_alloc_context(read_buffer, INITIAL_BUFFER_SIZE, 0, mUserArg, mReadCb, nullptr, mSeekCb);
 
@@ -94,6 +93,8 @@ namespace Cicada {
             use_filename = true;
         }
 
+        av_dict_set_int(&mInputOpts, "safe", 0, 0);
+        av_dict_set(&mInputOpts, "protocol_whitelist", "file,http,https,tcp,tls", 0);
         /*If a url with mp4 ext name, but is not a mp4 file, the mp4 demuxer will be matched
          * by ext name , mp4 demuxer will try to find moov box, it will ignore the return value
          * of the avio_*, and don't check interrupt flag, if the url is a network file, here will
@@ -144,6 +145,22 @@ namespace Cicada {
         // TODO: add a opt to set fps probe
         mCtx->fps_probe_size = 0;
         // TODO: only find ts and flv's info?
+
+        if (mMetaInfo) {
+            for (int i = 0; i < mCtx->nb_streams; ++i) {
+                if (i >= mMetaInfo->meta.size()) {
+                    break;
+                }
+
+                set_stream_meta(mCtx->streams[i], (Stream_meta *) *mMetaInfo->meta[i].get());
+            }
+
+            // TODO: set it to zero can avoid read and decode more frames,but wen seek to back in hlsstream,will lead pts err
+            if (mMetaInfo->bContinue) {
+                mCtx->max_ts_probe = 0;
+            }
+        }
+
         ret = avformat_find_stream_info(mCtx, nullptr);
 
         if (mInterrupted) {
@@ -215,25 +232,24 @@ namespace Cicada {
 
             if (err < 0) {
                 if (err != AVERROR(EAGAIN)) {
-                    if (mCtx->pb) {
+                    if (mCtx->pb && mCtx->pb->error != AVERROR_EXIT) {
                         av_log(NULL, AV_LOG_WARNING, "%s:%d: %s, ctx->pb->error=%d\n", __FILE__, __LINE__, getErrorString(err),
                                mCtx->pb->error);
                     }
                 }
 
                 if (mCtx->pb && mCtx->pb->error == FRAMEWORK_ERR_EXIT) {
-                    mCtx->pb->error = 0;
                     av_packet_free(&pkt);
                     return FRAMEWORK_ERR_EXIT;
                 }
 
                 if (err == AVERROR_EOF) {
-                    if (mCtx->pb->error == AVERROR(EAGAIN)) {
+                    if (mCtx->pb && mCtx->pb->error == AVERROR(EAGAIN)) {
                         av_packet_free(&pkt);
                         return mCtx->pb->error;
                     }
 
-                    if (mCtx->pb->error < 0) {
+                    if (mCtx->pb && mCtx->pb->error < 0) {
                         av_packet_free(&pkt);
                         int ret = mCtx->pb->error;
                         mCtx->pb->error = 0;
@@ -281,11 +297,11 @@ namespace Cicada {
         const uint8_t *new_extradata = av_packet_get_side_data(pkt,
                                        AV_PKT_DATA_NEW_EXTRADATA,
                                        &new_extradata_size);
-        int streamIndex = pkt->stream_index;
-        AVCodecParameters *codecpar = mCtx->streams[streamIndex]->codecpar;
 
         if (new_extradata) {
             AF_LOGI("AV_PKT_DATA_NEW_EXTRADATA");
+            int streamIndex = pkt->stream_index;
+            AVCodecParameters *codecpar = mCtx->streams[streamIndex]->codecpar;
             av_free(codecpar->extradata);
             codecpar->extradata = static_cast<uint8_t *>(av_malloc(new_extradata_size + AV_INPUT_BUFFER_PADDING_SIZE));
             memcpy(codecpar->extradata, new_extradata, new_extradata_size);
@@ -332,15 +348,7 @@ namespace Cicada {
 
         if (needUpdateExtraData) {
             packet->setExtraData(new_extradata, new_extradata_size);
-        } else if (!bFillExtraData && (nullptr == packet->getInfo().extra_data) && (nullptr != codecpar->extradata)) {
-            packet->setExtraData(codecpar->extradata, codecpar->extradata_size);
         }
-
-        if (packet->getInfo().extra_data) {
-            bFillExtraData = true;
-        }
-
-        packet->getInfo().codec_id = AVCodec2CicadaCodec(codecpar->codec_id);
 
         if (packet->getInfo().pts != INT64_MIN) {
             packet->getInfo().timePosition = packet->getInfo().pts - mCtx->start_time;
@@ -449,12 +457,22 @@ namespace Cicada {
 
         bPaused = true;
 #if AF_HAVE_PTHREAD
+        {
+            std::unique_lock<std::mutex> waitLock(mQueLock);
+            bPaused = true;
+        }
         mQueCond.notify_one();
         mPthread->pause();
+#else
+        bPaused = true;
 #endif
 
         if (mInterruptCb) {
             mInterruptCb(mUserArg, 0);
+        }
+        if(mCtx->pb->error < 0) {
+            mCtx->pb->error = 0;
+            avio_feof(mCtx->pb);
         }
 
         mPacketQueue.clear();
@@ -529,14 +547,16 @@ namespace Cicada {
     void avFormatDemuxer::Stop()
     {
 #if AF_HAVE_PTHREAD
-        bPaused = true;
+        {
+            std::unique_lock<std::mutex> waitLock(mQueLock);
+            bPaused = true;
+        }
         mQueCond.notify_one();
 
         if (mPthread) {
             mPthread->stop();
         }
 
-        bFillExtraData = false;
 #endif
     }
 
@@ -552,7 +572,9 @@ namespace Cicada {
             std::unique_lock<std::mutex> waitLock(mQueLock);
 
             if (bEOS) {
-                mQueCond.wait(waitLock);
+                mQueCond.wait(waitLock, [this]() {
+                    return bPaused || mInterrupted;
+                });
             }
         }
 
@@ -567,7 +589,9 @@ namespace Cicada {
             std::unique_lock<std::mutex> waitLock(mQueLock);
 
             if (mPacketQueue.size() > MAX_QUEUE_SIZE) {
-                mQueCond.wait(waitLock);
+                mQueCond.wait(waitLock, [this]() {
+                    return mPacketQueue.size() <= MAX_QUEUE_SIZE || bPaused || mInterrupted;
+                });
             }
 
             mPacketQueue.push_back(std::move(pkt));
@@ -577,6 +601,11 @@ namespace Cicada {
             if (ret != AVERROR(EAGAIN) && ret != FRAMEWORK_ERR_EXIT) {
                 mError = ret;
             }
+
+            std::unique_lock<std::mutex> waitLock(mQueLock);
+            mQueCond.wait_for(waitLock, std::chrono::milliseconds(10), [this]() {
+                return bPaused || mInterrupted;
+            });
         }
 
         return 0;
@@ -606,10 +635,8 @@ namespace Cicada {
                 return 0;
             }
 
-            if (mError) {
-                int64_t ret = mError;
-                mError = 0;
-                return ret;
+            if (mError < 0) {
+                return mError;
             }
 
             return -EAGAIN;
@@ -630,10 +657,13 @@ namespace Cicada {
     bool avFormatDemuxer::is_supported(const string &uri, const uint8_t *buffer, int64_t size, int *type, const Cicada::DemuxerMeta *meta,
                                        const Cicada::options *opts)
     {
+#ifdef ENABLE_HLS_DEMUXER
+
         if (HlsParser::probe(buffer, size) > 0) {
             return false;
         }
 
+#endif
         AVProbeData pd = {uri.c_str(), const_cast<unsigned char *>(buffer), static_cast<int>(size)};
         int score = AVPROBE_SCORE_RETRY;
         AVInputFormat *fmt = av_probe_input_format2(&pd, 1, &score);
@@ -657,6 +687,15 @@ namespace Cicada {
     {
         addPrototype(this);
         ffmpeg_init();
+    }
+
+    void avFormatDemuxer::PreStop()
+    {
+#if AF_HAVE_PTHREAD
+        std::unique_lock<std::mutex> waitLock(mQueLock);
+        bPaused = true;
+        mQueCond.notify_one();
+#endif
     }
 
 }

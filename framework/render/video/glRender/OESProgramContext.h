@@ -9,7 +9,7 @@
 #include "platform/android/decoder_surface.h"
 #include "GLRender.h"
 
-class OESProgramContext : public IProgramContext {
+class OESProgramContext : public IProgramContext , private DecoderSurfaceCallback{
 public:
     OESProgramContext();
 
@@ -17,6 +17,8 @@ public:
 
 private:
     int initProgram() override;
+
+    void createSurface() override;
 
     void *getSurface() override;
 
@@ -28,15 +30,19 @@ private:
 
     void updateFlip(IVideoRender::Flip flip) override ;
 
+    void updateBackgroundColor(uint32_t color) override;
+
     int updateFrame(std::unique_ptr<IAFFrame> &frame) override;
 
 private:
 
-    void createDecoderSurface();
+    void getShaderLocations();
 
     void updateFlipCoords();
 
     void updateDrawRegion();
+
+    void onFrameAvailable() override ;
 private:
 
     IVideoRender::Rotate mRotate = IVideoRender::Rotate_None;
@@ -45,6 +51,7 @@ private:
 
     int mWindowWidth  = 0;
     int mWindowHeight = 0;
+    bool mWindowChanged = false;
 
     double mDar = 1;
     int mFrameWidth = 0;
@@ -54,6 +61,14 @@ private:
     Cicada::DecoderSurface *mDecoderSurface = nullptr;
 
     GLuint mOESProgram = 0;
+    GLuint mVertShader = 0;
+    GLuint mFragmentShader = 0;
+    GLuint mPositionLocation = 0;
+    GLuint mTexCoordLocation = 0;
+    GLint mMVPMatrixLocation = 0;
+    GLint mSTMatrixLocation = 0;
+    GLint mTextureLocation = 0;
+
 
     GLfloat mOESMVMatrix[16] = {1.0f, 0, 0, 0,
                                 0, 1.0f, 0, 0,
@@ -71,6 +86,13 @@ private:
 
     bool mRegionChanged = false;
     GLfloat mDrawRegion[12]={0.0f};
+
+    std::mutex mFrameAvailableMutex;
+    std::condition_variable mFrameAvailableCon;
+    bool mFrameAvailable = false;
+
+    uint32_t mBackgroundColor = 0xff000000;
+    bool mBackgroundColorChanged = true;
 
 };
 

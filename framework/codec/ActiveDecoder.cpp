@@ -26,6 +26,7 @@ int ActiveDecoder::open(const Stream_meta *meta, void *voutObsr, uint64_t flags)
     }
 
     mRunning = true;
+    mCodecId = meta->codec;
 #if AF_HAVE_PTHREAD
     auto func = [this]() -> int { return this->decode_func(); };
     mDecodeThread = new afThread(func, LOG_TAG);
@@ -36,14 +37,19 @@ int ActiveDecoder::open(const Stream_meta *meta, void *voutObsr, uint64_t flags)
 
 void ActiveDecoder::close()
 {
-    mRunning = false;
 #if AF_HAVE_PTHREAD
+    {
+        std::unique_lock<std::mutex> locker(mSleepMutex);
+        mRunning = false;
+    }
     mSleepCondition.notify_one();
 
     if (mDecodeThread) {
         mDecodeThread->pause();
     }
 
+#else
+    mRunning = false;
 #endif
     close_decoder();
 #if AF_HAVE_PTHREAD
@@ -69,26 +75,25 @@ int ActiveDecoder::decode_func()
     int needWait = 0;
     int ret;
     int64_t pts = INT64_MIN;
-    bool empty;
-    {
+
+    if (!mPacket) {
         std::unique_lock<std::mutex> uMutex(mMutex);
-        empty = mInputQueue.empty();
+
+        if (!mInputQueue.empty()) {
+            mPacket = move(mInputQueue.front());
+            mInputQueue.pop();
+        }
     }
 
-    if (!empty) {
-        std::unique_lock<std::mutex> uMutex(mMutex);
-
-        if (mInputQueue.front().get()) {
-            pts = mInputQueue.front().get()->getInfo().pts;
-            ret = enqueue_decoder(mInputQueue.front());
-        } else {
-            ret = 0;
-        }
+    if (mPacket) {
+        pts = mPacket->getInfo().pts;
+        ret = enqueue_decoder(mPacket);
 
         if (ret == -EAGAIN) {
             needWait++;
         } else {
-            mInputQueue.pop();
+            //  assert(mPacket == nullptr);
+            mPacket = nullptr;
 
             if (ret == STATUS_EOS) {
                 bDecoderEOS = true;
@@ -138,8 +143,12 @@ bool ActiveDecoder::needDrop(IAFPacket *packet)
         return false;
     }
 
+    if (packet->getInfo().flags & AF_PKT_FLAG_CORRUPT) {
+        return true;
+    }
+
     if (bNeedKeyFrame) { // need a key frame, when first start or after seek
-        if (packet->getInfo().flags == 0) { // drop the frame that not a key frame
+        if ((packet->getInfo().flags & AF_PKT_FLAG_KEY) == 0) { // drop the frame that not a key frame
             // TODO: return error?
             AF_LOGW("wait a key frame\n");
             return true;
@@ -150,6 +159,11 @@ bool ActiveDecoder::needDrop(IAFPacket *packet)
         }
     } else if (packet->getInfo().flags) {
         keyPts = INT64_MIN; // get the next key frame, stop to check
+    }
+
+    // TODO: make sure HEVC not need drop also
+    if (mCodecId != AF_CODEC_ID_HEVC) {
+        return false;
     }
 
     if (packet->getInfo().pts < keyPts) { // after get the key frame, check the wrong frame use pts
@@ -215,7 +229,8 @@ int ActiveDecoder::thread_send_packet(unique_ptr<IAFPacket> &packet)
         return 0;
     }
 
-    if (mInputQueue.size() >= MAX_INPUT_SIZE) {
+    if ((mInputQueue.size() >= MAX_INPUT_SIZE)
+            || (mOutputQueue.size() >= maxOutQueueSize)) {
         // TODO: wait for timeOut us
         status |= STATUS_RETRY_IN;
     } else {
@@ -308,6 +323,7 @@ void ActiveDecoder::flush()
         mHoldingQueue.pop();
     }
 
+    mPacket = nullptr;
 #endif
     clean_error();
     flush_decoder();
@@ -328,7 +344,10 @@ void ActiveDecoder::flush()
 void ActiveDecoder::preClose()
 {
 #if AF_HAVE_PTHREAD
-    mRunning = false;
+    {
+        std::unique_lock<std::mutex> locker(mSleepMutex);
+        mRunning = false;
+    }
     mSleepCondition.notify_one();
 
     if (mDecodeThread) {
@@ -344,9 +363,8 @@ int ActiveDecoder::extract_decoder()
 {
     int count = 0;
     int size;
-
     {
-        std::unique_lock <std::mutex> uMutex(mMutex);
+        std::unique_lock<std::mutex> uMutex(mMutex);
         size = mOutputQueue.size();
     }
 
@@ -354,7 +372,7 @@ int ActiveDecoder::extract_decoder()
         int ret = 0;
 
         do {
-            unique_ptr <IAFFrame> pFrame{};
+            unique_ptr<IAFFrame> pFrame{};
             ret = dequeue_decoder(pFrame);
 
             if (ret < 0 || ret == STATUS_EOS) {
@@ -370,7 +388,7 @@ int ActiveDecoder::extract_decoder()
             }
 
             if (pFrame) {
-                std::unique_lock <std::mutex> uMutex(mMutex);
+                std::unique_lock<std::mutex> uMutex(mMutex);
                 mOutputQueue.push(move(pFrame));
                 count++;
             }
@@ -418,6 +436,12 @@ int ActiveDecoder::holdOn(bool hold)
 
     bHolding = hold;
     return 0;
+}
+
+int ActiveDecoder::getRecoverQueueSize()
+{
+    unique_lock<mutex> uMutex(mMutex);
+    return int(mHoldingQueue.size() + get_decoder_recover_size());
 }
 
 #endif

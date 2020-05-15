@@ -33,10 +33,18 @@ namespace Cicada {
     int ffmpegDataSource::Open(int flags)
     {
         AVDictionary *format_opts = nullptr;
+        av_dict_set_int(&format_opts, "rw_timeout", mConfig.low_speed_time_ms * 1000, 0);
         int ret = ffurl_open(&mPuc, mUri.c_str(), AVIO_FLAG_READ | AVIO_FLAG_NONBLOCK, &mInterruptCB, &format_opts);
 
         if (ret == AVERROR_PROTOCOL_NOT_FOUND) {
             ret = FRAMEWORK_ERR_PROTOCOL_NOT_SUPPORT;
+        }
+        if (format_opts) {
+            av_dict_free(&format_opts);
+        }
+
+        if (rangeStart != INT64_MIN) {
+            ffurl_seek(mPuc, (int64_t) rangeStart, SEEK_SET);
         }
 
         return ret;
@@ -65,6 +73,14 @@ namespace Cicada {
 
     int ffmpegDataSource::Read(void *buf, size_t nbyte)
     {
+        if (rangeEnd != INT64_MIN) {
+            nbyte = std::min(nbyte, (size_t) (rangeEnd - Seek(0, SEEK_CUR)));
+
+            if (nbyte == 0) {
+                return 0;
+            }
+        }
+
         int ret = ffurl_read(mPuc, (unsigned char *) buf, nbyte);
 
         if (ret == AVERROR_EOF) {

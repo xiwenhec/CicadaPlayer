@@ -11,10 +11,11 @@
 #include <stdio.h>
 #include <string>
 #include <vector>
+#include <utils/CicadaType.h>
 
 namespace Cicada {
 
-    class MediaPlayerConfig {
+    class CICADA_CPLUS_EXTERN MediaPlayerConfig {
     public:
         MediaPlayerConfig();
 
@@ -29,13 +30,14 @@ namespace Cicada {
         int maxBufferDuration;
         int highBufferDuration;
         int startBufferDuration;
-        /* -1: not set */
-        int maxProbeSize;
         /* true is to clear image show when stop */
         bool bClearShowWhenStop;
         /* enable tunnel rander*/
         bool bEnableTunnelRender;
         std::vector<std::string> customHeaders;
+
+    public:
+        std::string toString() const;
     };
 }
 

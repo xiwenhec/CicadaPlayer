@@ -21,6 +21,7 @@
 #include <utils/file/FileUtils.h>
 #include <data_source/dataSourcePrototype.h>
 #include <demuxer/IDemuxer.h>
+#include <utils/af_string.h>
 
 
 #ifdef __APPLE__
@@ -152,7 +153,7 @@ namespace Cicada {
 
     void SuperMediaPlayer::Start()
     {
-        if ((PLAYER_INITIALZED == mPlayStatus) || (PLAYER_PREPARING == mPlayStatus)) {
+        if ((PLAYER_INITIALZED == mPlayStatus) || (PLAYER_PREPARING == mPlayStatus) || PLAYER_PREPARINIT == mPlayStatus) {
             waitingForStart = true;
         }
 
@@ -296,11 +297,15 @@ namespace Cicada {
 
         if (mDataSource) {
             mDataSource->Interrupt(inter);
+        } else {
+            AF_TRACE;
         }
 
         if (mDemuxerService) {
             mDemuxerService->interrupt(inter);
             mDemuxerService->preStop();
+        } else {
+            AF_TRACE;
         }
     }
 
@@ -323,7 +328,6 @@ namespace Cicada {
         Interrupt(true);
         mPlayerCondition.notify_one();
         mApsaraThread.pause();
-        mMessageControl.clear();
         mPlayStatus = PLAYER_STOPPED;
         //        ChangePlayerStatus(PLAYER_STOPPED);
         mBufferController.ClearPacket(BUFFER_TYPE_AV);
@@ -347,6 +351,7 @@ namespace Cicada {
 
         AF_TRACE;
         mAudioRender = nullptr;
+        mBRendingStart = false;
         AF_TRACE;
         {
             std::lock_guard<std::mutex> uMutex(mCreateMutex);
@@ -363,6 +368,8 @@ namespace Cicada {
                 mAudioDecoder = nullptr;
             }
         }
+        // clear the message queue after flash video render
+        mMessageControl.clear();
         AF_TRACE;
 
         if (mDemuxerService) {
@@ -550,6 +557,27 @@ namespace Cicada {
         } else if (theKey == "description") {
             mSet.mOptions.set(theKey, value, options::REPLACE);
             return 0;
+        } else if (theKey == "enableVRC") {
+            mSet.bEnableVRC = (atoi(value) != 0);
+        } else if (theKey == "maxAccurateSeekDelta") {
+            mSet.maxASeekDelta = atoi(value) * 1000;
+        } else if (theKey == "maxVideoRecoverSize") {
+            mSet.maxVideoRecoverSize = atoi(value);
+        } else if ( theKey == "surfaceChanged") {
+            std::lock_guard<std::mutex> uMutex(mCreateMutex);
+
+            if (mVideoRender != nullptr) {
+                mVideoRender->surfaceChanged();
+            }
+        } else if (theKey == "streamTypes") {
+            uint64_t flags = atoll(value);
+            mSet.bDisableAudio = mSet.bDisableVideo = true;
+            if (flags & VIDEO_FLAG) {
+                mSet.bDisableVideo = false;
+            }
+            if (flags & AUDIO_FLAG) {
+                mSet.bDisableAudio = false;
+            }
         }
 
         return 0;
@@ -577,7 +605,13 @@ namespace Cicada {
 
             snprintf(value, MAX_OPT_VALUE_LENGTH, "%" PRId64 "", size);
         } else if (theKey == "description") {
-            snprintf(value, MAX_OPT_VALUE_LENGTH, "%s", mSet.mOptions.get("description").c_str());
+            sprintf(value, "%s", mSet.mOptions.get("description").c_str());
+        } else if (theKey == "descriptionLen") {
+            snprintf(value, MAX_OPT_VALUE_LENGTH, "%lu",
+                     static_cast<unsigned long>(mSet.mOptions.get("description").length()));
+        } else if (theKey == "renderFps") {
+            float renderFps = GetVideoRenderFps();
+            snprintf(value, MAX_OPT_VALUE_LENGTH, "%f", renderFps);
         }
 
         return;
@@ -653,6 +687,16 @@ namespace Cicada {
         this->putMsg(MSG_SET_MIRROR_MODE, dummyMsg);
     }
 
+    void SuperMediaPlayer::SetVideoBackgroundColor(uint32_t color)
+    {
+        if (color == mSet.mVideoBackgroundColor ) {
+            return;
+        }
+
+        mSet.mVideoBackgroundColor = color;
+        this->putMsg(MSG_SET_VIDEO_BACKGROUND_COLOR, dummyMsg);
+    }
+
     MirrorMode SuperMediaPlayer::GetMirrorMode()
     {
         return mSet.mirrorMode;
@@ -695,24 +739,14 @@ namespace Cicada {
         mSet.customHeaders.clear();
     }
 
+    // TODO: move to mainService thread
     void SuperMediaPlayer::setSpeed(float speed)
     {
-        // TODO: check the speed range
-        if (!CicadaUtils::isEqual(mSet.rate, speed)) {
-            if (HAVE_AUDIO) {
-                if (mAudioRender != nullptr) {
-                    mAudioRender->setSpeed(speed);
-                }
-            }
-
-            if (mVideoRender) {
-                mVideoRender->setSpeed(speed);
-            }
-
-            mSet.rate = speed;
-            updateLoopGap();
-            mMasterClock.SetScale(speed);
-        }
+        MsgParam param;
+        MsgSpeedParam speedParam;
+        speedParam.speed = speed;
+        param.msgSpeedParam = speedParam;
+        putMsg(MSG_SET_SPEED, param);
     }
 
     float SuperMediaPlayer::getSpeed()
@@ -746,9 +780,16 @@ namespace Cicada {
     int64_t SuperMediaPlayer::GetPropertyInt(PropertyKey key)
     {
         switch (key) {
-            case PROPERTY_KEY_VIDEO_BUFFER_LEN:
-                return mBufferController.GetPacketDuration(BUFFER_TYPE_VIDEO);
-                break;
+            case PROPERTY_KEY_VIDEO_BUFFER_LEN: {
+                int64_t duration = mBufferController.GetPacketDuration(BUFFER_TYPE_VIDEO);
+
+                if (duration < 0) {
+                    duration = mBufferController.GetPacketLastPTS(BUFFER_TYPE_VIDEO) -
+                               mBufferController.GetPacketPts(BUFFER_TYPE_VIDEO);
+                }
+
+                return duration;
+            }
 
             case PROPERTY_KEY_REMAIN_LIVE_SEG:
                 return mRemainLiveSegment;
@@ -870,6 +911,10 @@ namespace Cicada {
     void SuperMediaPlayer::reLoad()
     {
         mSourceListener.enableRetry();
+        std::lock_guard<std::mutex> uMutex(mCreateMutex);
+        if (mDemuxerService) {
+            mDemuxerService->getDemuxerHandle()->Reload();
+        }
     }
 
     IVideoRender::Scale SuperMediaPlayer::convertScaleMode(ScaleMode mode)
@@ -963,7 +1008,7 @@ namespace Cicada {
 
     void SuperMediaPlayer::updateLoopGap()
     {
-        switch (mPlayStatus) {
+        switch (mPlayStatus.load()) {
             case PLAYER_PREPARINIT:
             case PLAYER_PREPARING:
             case PLAYER_PREPARED:
@@ -1103,6 +1148,14 @@ namespace Cicada {
         }
 
         doDeCode();
+
+        if (!mBRendingStart && mPlayStatus == PLAYER_PLAYING && !mBufferingFlag) {
+            if ((!HAVE_VIDEO || !mVideoFrameQue.empty() || (APP_BACKGROUND == mAppStatus))
+                    && (!HAVE_AUDIO || !mAudioFrameQue.empty())) {
+                startRendering(true);
+            }
+        }
+
         doRender();
         checkEOS();
         curTime = af_gettime_relative() / 1000;
@@ -1141,7 +1194,9 @@ namespace Cicada {
                             && (cur_buffer_duration > mSet.maxBufferDuration - BufferGap)) {
                         break;
                     }
-                } else if (cur_buffer_duration > mSet.maxBufferDuration) {
+                }
+
+                if (cur_buffer_duration > mSet.maxBufferDuration) {
                     mBufferIsFull = true;
                     break;
                 }
@@ -1203,7 +1258,7 @@ namespace Cicada {
                     AF_LOGW("read error %s\n", framework_err2_string(ret));
                     break;
                 } else if (ret < 0) {
-                    if (cur_buffer_duration > 0) {
+                    if (!mBufferingFlag) {
                         //AF_LOGI("Player ReadPacket ret < 0 with data");
                     } else {
                         AF_LOGE("Player ReadPacket error 0x%04x :%s\n", -ret, framework_err2_string(ret));
@@ -1332,7 +1387,6 @@ namespace Cicada {
             int64_t maxBufferDuration = getPlayerBufferDuration(true);
 
             if (maxBufferDuration > mSet.RTMaxDelayTime + 1000 * 1000 * 5) {
-                setSpeed(1.0);
                 //drop frame
                 int64_t lastVideoPos = mBufferController.GetPacketLastTimePos(BUFFER_TYPE_VIDEO);
                 int64_t lastAudioPos = mBufferController.GetPacketLastTimePos(BUFFER_TYPE_AUDIO);
@@ -1349,9 +1403,9 @@ namespace Cicada {
 
                 lastPos -= min(mSet.RTMaxDelayTime, 500 * 1000);
                 int64_t lastVideoKeyTimePos = mBufferController.GetKeyTimePositionBefore(BUFFER_TYPE_VIDEO, lastPos);
-                AF_LOGD("drop left lastPts %lld, lastVideoKeyPts %lld", lastPos, lastVideoKeyTimePos);
-
                 if (lastVideoKeyTimePos != INT64_MIN) {
+                    AF_LOGD("drop left lastPts %lld, lastVideoKeyPts %lld", lastPos, lastVideoKeyTimePos);
+                    ProcessSetSpeed(1.0);
                     int64_t dropVideoCount = mBufferController.ClearPacketBeforeTimePos(BUFFER_TYPE_VIDEO, lastVideoKeyTimePos);
                     int64_t dropAudioCount = mBufferController.ClearPacketBeforeTimePos(BUFFER_TYPE_AUDIO, lastVideoKeyTimePos);
 
@@ -1375,7 +1429,13 @@ namespace Cicada {
             int64_t lastAudio = mBufferController.GetPacketLastPTS(BUFFER_TYPE_AUDIO);
 
             if ((lastAudio != INT64_MIN) && (mPlayedAudioPts != INT64_MIN)) {
-                int64_t delayTime = lastAudio - mPlayedAudioPts;
+                int64_t playTime = getAudioPlayTimeStamp();
+
+                if (INT64_MIN == playTime) {
+                    playTime = mPlayedAudioPts;
+                }
+
+                int64_t delayTime = lastAudio - playTime;
                 static int64_t lastT = af_gettime_ms();
 
                 if (af_gettime_ms() - lastT > 1000) {
@@ -1445,16 +1505,16 @@ namespace Cicada {
     {
         int recoverGap = 50 * 1000;
 
-        if (mSet.RTMaxDelayTime >= 1000) {
+        if (mSet.RTMaxDelayTime >= 1000 * 1000) {
             recoverGap = 500 * 1000;
-        } else if (mSet.RTMaxDelayTime >= 200) {
+        } else if (mSet.RTMaxDelayTime >= 200 * 1000) {
             recoverGap = 100 * 1000;
         }
 
         if ((delayTime > mSet.RTMaxDelayTime) && (150 * 1000 < delayTime)) {
-            setSpeed(1.2);
+            ProcessSetSpeed(1.2);
         } else if ((delayTime < mSet.RTMaxDelayTime - recoverGap) || (100 * 1000 > delayTime)) {
-            setSpeed(1.0);
+            ProcessSetSpeed(1.0);
         }
     }
 
@@ -1553,6 +1613,7 @@ namespace Cicada {
 
             if (videoFrameSize < max_cache_size) {
                 int64_t startDecodeTime = af_getsteady_ms();
+                int64_t videoEarlyUs = 0;
 
                 do {
                     // if still in seeking, don't send data to decoder in background
@@ -1565,8 +1626,10 @@ namespace Cicada {
                         mVideoPacket = mBufferController.getPacket(BUFFER_TYPE_VIDEO);
                     }
 
+                    videoEarlyUs = mVideoPacket ? mVideoPacket->getInfo().dts - mMasterClock.GetTime() : 0;
+
                     // don't send too much data when in background
-                    if (mVideoPacket && APP_BACKGROUND == mAppStatus && mVideoPacket->getInfo().dts > mMasterClock.GetTime()) {
+                    if (mVideoPacket && APP_BACKGROUND == mAppStatus && videoEarlyUs > 0) {
                         break;
                     }
 
@@ -1585,14 +1648,14 @@ namespace Cicada {
 
                     int ret = DecodeVideoPacket(mVideoPacket);
 
-                    if (ret == -EAGAIN) {
+                    if (ret & STATUS_RETRY_IN) {
                         break;
                     }
 
-                    if (af_getsteady_ms() - startDecodeTime > 100) {
+                    if (af_getsteady_ms() - startDecodeTime > 50) {
                         break;
                     }
-                } while (mSeekNeedCatch);
+                } while ((mSeekNeedCatch || dropLateVideoFrames) && (videoEarlyUs < 200 * 1000));
             }
         }
 
@@ -1650,9 +1713,23 @@ namespace Cicada {
             return;
         }
 
-        if (mAudioRender != nullptr && mAudioRender->getQueDuration() != 0) {
-            AF_TRACE;
-            return;
+        if (mAudioRender != nullptr) {
+            uint64_t audioQueDuration = mAudioRender->getQueDuration();
+
+            if (audioQueDuration != 0) {
+                AF_TRACE;
+//work around: xiaomi 5X 7.1.2 audioTrack getPosition always is 0 when seek to end
+                int64_t now = af_getsteady_ms();
+
+                if (mCheckAudioQueEOSTime == INT64_MIN || mAudioQueDuration != audioQueDuration) {
+                    mCheckAudioQueEOSTime = now;
+                    mAudioQueDuration = audioQueDuration;
+                }
+
+                if ((now - mCheckAudioQueEOSTime) * 1000 <= audioQueDuration) {
+                    return;
+                }
+            }
         }
 
         NotifyPosition(mDuration / 1000);
@@ -1689,7 +1766,7 @@ namespace Cicada {
         if (pVideoPacket != nullptr) {
             // for cache video, or seeking accurate, check whether drop output frame
             if (mSeekNeedCatch || dropLateVideoFrames) {
-                int64_t checkPos = mSeekNeedCatch ? mSeekPos : pos;
+                int64_t checkPos = mSeekNeedCatch ? mSeekPos.load() : pos;
 
                 // only decode and don't need output to render if too old
                 if ((pVideoPacket->getInfo().timePosition < checkPos)
@@ -1785,7 +1862,7 @@ namespace Cicada {
 
                 // if send all audio data, try to render again to send more data.
                 if (RENDER_FULL == ret) {
-                    audioRendered = RenderAudio();
+                    RenderAudio();
                 }
             }
         }
@@ -1808,7 +1885,7 @@ namespace Cicada {
         }
 
         if ((HAVE_SUBTITLE || mSubPlayer) && !mSeekFlag) {
-            RenderSubtitle(mCurrentPos);
+            RenderSubtitle(mCurVideoPts);
         }
 
         return audioRendered || videoRendered;
@@ -1840,10 +1917,14 @@ namespace Cicada {
             return ret;
         }
 
-        AVAFFrame *avafFrame = dynamic_cast<AVAFFrame *> (mAudioFrameQue.front().get());
+        auto *avafFrame = dynamic_cast<AVAFFrame *>(mAudioFrameQue.front().get());
 
         if (avafFrame) {
             duration = getPCMFrameDuration(avafFrame->ToAVFrame());
+        }
+
+        if (mFrameCb) {
+            mFrameCb(mFrameCbUserData, avafFrame);
         }
 
         render_ret = mAudioRender->renderFrame(mAudioFrameQue.front(), 0);
@@ -1857,6 +1938,9 @@ namespace Cicada {
                 mAudioTime.deltaTime = 0;
                 mLastAudioFrameDuration = -1;
                 setUpAudioRender(mAudioFrameQue.front()->getInfo().audio);
+                if (mBRendingStart) {
+                    mAudioRender->pause(false);
+                }
                 mAudioRender->renderFrame(mAudioFrameQue.front(), 0);
             }
         }
@@ -1891,7 +1975,7 @@ namespace Cicada {
 
                 mAudioTime.deltaTimeTmp += offset;
 
-                if (llabs(mAudioTime.deltaTimeTmp) > 200000) {
+                if (llabs(mAudioTime.deltaTimeTmp) > 100000) {
                     AF_LOGW("correct audio and master clock offset is %lld, frameDuration :%lld", mAudioTime.deltaTimeTmp,
                             mLastAudioFrameDuration);
                     mAudioTime.deltaTime += mAudioTime.deltaTimeTmp;
@@ -1937,8 +2021,8 @@ namespace Cicada {
         int64_t videoPts = videoFrame->getInfo().pts;
 
         // work around for huaweiP20 pro hardware decode get pts = INT64_MIN when change resolution.
-        if (videoPts == INT64_MIN && videoPts < mCurVideoPts) {
-            videoPts = mCurVideoPts + 1;
+        if (videoPts == INT64_MIN && videoPts < mPlayedVideoPts) {
+            videoPts = mPlayedVideoPts + 1;
         }
 
         int frameWidth = videoFrame->getInfo().video.width;
@@ -1969,7 +2053,8 @@ namespace Cicada {
         /*
          *  if stc is free, video rectify it
          */
-        if (llabs(videoLateUs) > 1000 * 1000) {
+        if ((llabs(videoLateUs) > 1000 * 1000)
+                || (llabs(videoLateUs) > mSet.maxBufferDuration)) {
             // don't have master, or master not in valid status
             if (!mMasterClock.haveMaster() || !mMasterClock.isMasterValid()) {
                 mMasterClock.setTime(videoPts);
@@ -2012,7 +2097,7 @@ namespace Cicada {
             }
 
             if (dropLateVideoFrames) {
-                if (videoLateUs > 0) {
+                if (videoLateUs > 10 * 1000) {
                     render = false;
                 } else {
                     dropLateVideoFrames = false;
@@ -2024,6 +2109,10 @@ namespace Cicada {
             else if (INT64_MIN == mPlayedVideoPts || (videoPts - mPlayedVideoPts) > 60 * 1000) {
                 render = true;
             }
+        }
+
+        if (mFrameCb) {
+            mFrameCb(mFrameCbUserData, videoFrame.get());
         }
 
         if (render) {
@@ -2039,7 +2128,7 @@ namespace Cicada {
             if (!HAVE_AUDIO) {
                 if (mPlayedVideoPts == INT64_MIN) {
                     mMasterClock.setTime(videoPts);
-                    mMasterClock.setReferenceClock(nullptr, nullptr);
+                    mMasterClock.setReferenceClock(mClockRef, mCRArg);
                 }
             }
         } else {
@@ -2298,7 +2387,6 @@ namespace Cicada {
         }
 
         if (mCurrentVideoIndex >= 0 && mVideoDecoder == nullptr) {
-            AF_LOGD("SetUpVideoPath start");
             int ret = SetUpVideoPath();
 
             if (ret < 0) {
@@ -2328,10 +2416,28 @@ namespace Cicada {
             assert(0);
         }
 
-        int ret = mDemuxerService->readPacket(pMedia_Frame);
+        int index = -1;
+
+        if (HAVE_SUBTITLE && !mSubtitleEOS) {
+            if (mBufferController.GetPacketDuration(BUFFER_TYPE_SUBTITLE) <= 0) {
+                if (mSubtitleChangedFirstPts != INT64_MIN || 1) {
+                    index = mCurrentSubtitleIndex;
+                }
+            }
+        }
+
+        int ret = mDemuxerService->readPacket(pMedia_Frame, index);
 
         if (pMedia_Frame == nullptr) {
             //  AF_LOGD("Can't read packet %d\n", ret);
+            if (ret == 0) {
+                mSubtitleEOS = true;
+
+                if (index != -1) {
+                    ret = -EAGAIN;
+                }
+            }
+
             return ret;
         }
 
@@ -2346,13 +2452,19 @@ namespace Cicada {
         }
 
         if (mSeekFlag && mSeekNeedCatch) {
-            if (pFrame->getInfo().timePosition < (mSeekPos - SEEK_ACCURATE_MAX)) {
+            if (pFrame->getInfo().timePosition < (mSeekPos - mSet.maxASeekDelta)) {
                 // first frame is far away from seek position, don't suppport accurate seek
                 mSeekNeedCatch = false;
             }
         }
 
         int id = GEN_STREAM_INDEX(pFrame->getInfo().streamIndex);
+
+        if (mDuration < 0) {
+            unique_ptr<streamMeta> pMeta;
+            mDemuxerService->GetStreamMeta(pMeta, pFrame->getInfo().streamIndex, false);
+            mDuration = ((Stream_meta *) (pMeta.get()))->duration;
+        }
 
         if (id < mStreamInfoQueue.size()
                 && mStreamInfoQueue[id]->type == ST_TYPE_VIDEO
@@ -2412,7 +2524,7 @@ namespace Cicada {
                     delete mVideoParser;
                     mVideoParser = nullptr;
                 } else {
-                    mVideoParserTimes ++;
+                    mVideoParserTimes++;
 
                     if (mVideoParserTimes > 10) {
                         mVideoInterlaced = InterlacedType_NO;
@@ -2462,7 +2574,7 @@ namespace Cicada {
                 mFirstSeekStartTime = pFrame->getInfo().timePosition;
             }
 
-            if (mSeekFlag && mSeekNeedCatch && NeedDrop(pFrame->getInfo().pts, mSeekPos)) {
+            if (mSeekFlag && mSeekNeedCatch && NeedDrop(pFrame->getInfo().timePosition, mSeekPos)) {
                 return ret;
             }
 
@@ -2587,7 +2699,7 @@ namespace Cicada {
         //flush frame queue
 
         while (!mVideoFrameQue.empty()) {
-            ProcessVideoRenderedMsg(mVideoFrameQue.front()->getInfo().pts, nullptr);
+            ProcessVideoRenderedMsg(mVideoFrameQue.front()->getInfo().pts, af_getsteady_ms(), nullptr);
             mVideoFrameQue.pop();
         }
 
@@ -2611,6 +2723,7 @@ namespace Cicada {
 
         mSubtitleShowedQueue.clear();
         mSubtitleShowIndex = 0;
+        mSubtitleEOS = false;
     }
 
     void SuperMediaPlayer::PostBufferPositionMsg()
@@ -2638,49 +2751,52 @@ namespace Cicada {
 
     int64_t SuperMediaPlayer::getPlayerBufferDuration(bool gotMax)
     {
-        int64_t videoDuration = -1;
-        int64_t audioDuration = -1;
+        int64_t durations[3] = {-1, -1, -1};
+        int i = 0;
+        int64_t duration = -1;
 
         if (HAVE_VIDEO) {
-            videoDuration = mBufferController.GetPacketDuration(BUFFER_TYPE_VIDEO);
+            int64_t &duration_c = durations[i++];
+            duration_c = mBufferController.GetPacketDuration(BUFFER_TYPE_VIDEO);
 
 //            AF_LOGD("videoDuration is %lld\n",videoDuration);
-            if (videoDuration < 0 && !HAVE_AUDIO) {
-                videoDuration =
+            if (duration_c < 0 && !HAVE_AUDIO) {
+                duration_c =
                     mBufferController.GetPacketLastPTS(BUFFER_TYPE_VIDEO) -
                     mBufferController.GetPacketPts(BUFFER_TYPE_VIDEO);
 
-                if (videoDuration <= 0) {
-                    videoDuration = (int64_t) mBufferController.GetPacketSize(BUFFER_TYPE_VIDEO) * 40 * 1000;
+                if (duration_c <= 0) {
+                    duration_c = (int64_t) mBufferController.GetPacketSize(BUFFER_TYPE_VIDEO) * 40 * 1000;
                 }
             }
         }
 
         if (HAVE_AUDIO) {
-            audioDuration = mBufferController.GetPacketDuration(BUFFER_TYPE_AUDIO);
+            int64_t &duration_c = durations[i++];
+            duration_c = mBufferController.GetPacketDuration(BUFFER_TYPE_AUDIO);
 //            AF_LOGD("audioDuration is %lld\n",audioDuration);
         }
 
-        //AF_LOGI("videoDuration is %lld  audioDuration is %lld\n",videoDuration, audioDuration);
+        /*
+         *  Do not let player loading when switching subtitle, we'll read subtitle first
+         *  in ReadPacket()
+         */
+        if (HAVE_SUBTITLE && !mSubtitleEOS && mSubtitleChangedFirstPts == INT64_MIN) {
+            int64_t &duration_c = durations[i++];
+            duration_c = mBufferController.GetPacketDuration(BUFFER_TYPE_SUBTITLE);
+        }
 
-        if (videoDuration >= 0 && audioDuration >= 0) {
-            if (gotMax) {
-                return videoDuration < audioDuration ? audioDuration : videoDuration;
+        int num = i;
+
+        for (i = 0; i < num; i++) {
+            if (duration < 0) {
+                duration = durations[i];
             } else {
-                return videoDuration >= audioDuration ? audioDuration : videoDuration;
+                duration = gotMax ? std::max(duration, durations[i]) : std::min(duration, durations[i]);
             }
         }
 
-        if (videoDuration >= 0) {
-            return videoDuration;
-        }
-
-        if (audioDuration >= 0) {
-            return audioDuration;
-        }
-
-        //又没audio，又没video？？不应该走到这里的。
-        return -1;
+        return duration;
     }
 
     bool SuperMediaPlayer::SeekInCache(int64_t pos)
@@ -2738,7 +2854,12 @@ namespace Cicada {
             return;
         }
 
-        mDemuxerService->CloseStream(mCurrentVideoIndex);
+        if (mMixMode) {
+            mDemuxerService->CloseStream(GEN_STREAM_INDEX(mCurrentVideoIndex));
+        } else {
+            mDemuxerService->CloseStream(mCurrentVideoIndex);
+        }
+
         mDemuxerService->Seek(startTime / 1000 * 1000, 0, mWillChangedVideoStreamIndex);
 
         if (mMixMode) {
@@ -2830,6 +2951,10 @@ namespace Cicada {
 
     int SuperMediaPlayer::SetUpAudioPath()
     {
+        if (mBufferController.IsPacketEmtpy(BUFFER_TYPE_AUDIO)) {
+            return 0;
+        }
+
         unique_ptr<streamMeta> pMeta{};
         mDemuxerService->GetStreamMeta(pMeta, mCurrentAudioIndex, false);
         Stream_meta *meta = (Stream_meta *) (pMeta.get());
@@ -2880,6 +3005,10 @@ namespace Cicada {
             return 0;
         }
 
+        if (mBufferController.IsPacketEmtpy(BUFFER_TYPE_VIDEO)) {
+            return 0;
+        }
+
         mDemuxerService->GetStreamMeta(mCurrentVideoMeta, mCurrentVideoIndex, false);
         auto *meta = (Stream_meta *) (mCurrentVideoMeta.get());
 
@@ -2901,6 +3030,7 @@ namespace Cicada {
 
         int ret = 0;
         bool bHW = false;
+        AF_LOGD("SetUpVideoPath start");
 
         if (mSet.bEnableHwVideoDecode) {
             switch (meta->codec) {
@@ -3009,6 +3139,7 @@ namespace Cicada {
         mVideoRender = videoRenderFactory::create();
         mVideoRender->setScale(convertScaleMode(mSet.scaleMode));
         mVideoRender->setRotate(convertRotateMode(mSet.rotateMode));
+        mVideoRender->setBackgroundColor(mSet.mVideoBackgroundColor);
         mVideoRender->setFlip(convertMirrorMode(mSet.mirrorMode));
         mVideoRender->setDisPlay(mSet.mView);
         mVideoRender->setRenderResultCallback([this](int64_t pts, bool rendered) -> void {
@@ -3089,7 +3220,7 @@ namespace Cicada {
         mVideoWidth = 0;
         mVideoHeight = 0;
         mVideoRotation = 0;
-        mDuration = 0;
+        mDuration = INT64_MIN;
         mBufferPosition = 0;
         mSeekPos = INT64_MIN;
         mPlayedVideoPts = INT64_MIN;
@@ -3140,6 +3271,8 @@ namespace Cicada {
         mCurrentVideoMeta = nullptr;
         mAdaptiveVideo = false;
         dropLateVideoFrames = false;
+        mBRendingStart = false;
+        mSubtitleEOS = false;
 
         if (mVideoRender) {
             mVideoRender->setSpeed(1);
@@ -3206,7 +3339,7 @@ namespace Cicada {
         }
 
         if (mPlayStatus != PLAYER_INITIALZED && mPlayStatus != PLAYER_STOPPED) {
-            AF_LOGD("ProcessPrepareMsg status is %d", mPlayStatus);
+            AF_LOGD("ProcessPrepareMsg status is %d", mPlayStatus.load());
             return;
         }
 
@@ -3235,6 +3368,10 @@ namespace Cicada {
             }
         }
 
+        if (mCanceled) {
+            return;
+        }
+
         {
             std::lock_guard<std::mutex> locker(mCreateMutex);
             mDemuxerService = new demuxer_service(mDataSource);
@@ -3250,6 +3387,7 @@ namespace Cicada {
         if (!noFile) {
             mDemuxerService->SetDataCallBack(mBSReadCb, mBSCbArg, mBSSeekCb, mBSCbArg, nullptr);
         }
+
 
         //prepare之前seek
         if (mSeekPos > 0) {
@@ -3269,6 +3407,11 @@ namespace Cicada {
 #else
             mDemuxerService->getDemuxerHandle()->setBitStreamFormat(true, true);
 #endif
+            if (noFile) {
+                IDataSource::SourceConfig config;
+                mDataSource->Get_config(config);
+                mDemuxerService->getDemuxerHandle()->setDataSourceConfig(config);
+            }
         }
 
         //step2: Demuxer init and getstream index
@@ -3429,6 +3572,11 @@ namespace Cicada {
         config.customHeaders = mSet.customHeaders;
         config.listener = &mSourceListener;
         mSourceListener.enableRetry();
+
+        if (mCanceled) {
+            return FRAMEWORK_ERR_EXIT;
+        }
+
         {
             std::lock_guard<std::mutex> locker(mCreateMutex);
             mDataSource = dataSourcePrototype::create(mSet.url, &mSet.mOptions);
@@ -3517,6 +3665,11 @@ namespace Cicada {
         StreamInfo *currentInfo = nullptr;
         StreamInfo *willChangeInfo = nullptr;
         int i;
+        int currentId = mCurrentVideoIndex;
+
+        if (type == STREAM_TYPE_MIXED) {
+            currentId = GEN_STREAM_INDEX(mCurrentVideoIndex);
+        }
 
         for (i = 0; i < count; i++) {
             StreamInfo *info = mStreamInfoQueue[i];
@@ -3525,7 +3678,7 @@ namespace Cicada {
                 willChangeInfo = info;
             }
 
-            if (mCurrentVideoIndex == info->streamIndex) {
+            if (currentId == info->streamIndex) {
                 currentInfo = info;
             }
         }
@@ -3541,7 +3694,7 @@ namespace Cicada {
         mVideoChangedFirstPts = INT64_MAX;
 
         if (willChangeInfo->videoBandwidth < currentInfo->videoBandwidth) {
-            mDemuxerService->SwitchStreamAligned(mCurrentVideoIndex, index);
+            mDemuxerService->SwitchStreamAligned(currentId, index);
         } else {
             mMixMode = (type == STREAM_TYPE_MIXED);
             int videoCount = 0;
@@ -3605,18 +3758,9 @@ namespace Cicada {
         mCurrentSubtitleIndex = index;
         mBufferController.ClearPacket(BUFFER_TYPE_SUBTITLE);
         mEof = false;
+        mSubtitleEOS = false;
         FlushSubtitleInfo();
-        int64_t pts = 0;
-
-        if (mSeekPos > 0) {
-            pts = mSeekPos;
-        } else {
-            if (mPlayedVideoPts != INT64_MIN) {
-                pts = mPlayedVideoPts - mFirstVideoPts;
-            }
-        }
-
-        mDemuxerService->Seek(pts, 0, index);
+        mDemuxerService->Seek(getCurrentPosition(), 0, index);
     }
 
     void SuperMediaPlayer::ProcessStartMsg()
@@ -3634,11 +3778,6 @@ namespace Cicada {
             }
 
             ChangePlayerStatus(PLAYER_PLAYING);
-            mMasterClock.start();
-
-            if (mAudioRender) {
-                mAudioRender->pause(false);
-            }
         }
     }
 
@@ -3649,11 +3788,7 @@ namespace Cicada {
         }
 
         ChangePlayerStatus(PLAYER_PAUSED);
-        mMasterClock.pause();
-
-        if (mAudioRender) {
-            mAudioRender->pause(true);
-        }
+        startRendering(false);
     }
 
     void SuperMediaPlayer::VideoRenderCallback(void *arg, int64_t pts, void *userData)
@@ -3671,9 +3806,9 @@ namespace Cicada {
             return;
         }
 
-        pHandle->mUtil.render(pts);
         MsgParam param;
         param.videoRenderedParam.pts = pts;
+        param.videoRenderedParam.timeMs = af_getsteady_ms();
         param.videoRenderedParam.userData = userData;
         pHandle->putMsg(MSG_INTERNAL_VIDEO_RENDERED, param, false);
     }
@@ -3688,8 +3823,9 @@ namespace Cicada {
         }
     }
 
-    void SuperMediaPlayer::ProcessVideoRenderedMsg(int64_t pts, void *picUserData)
+    void SuperMediaPlayer::ProcessVideoRenderedMsg(int64_t pts, int64_t timeMs, void *picUserData)
     {
+        mUtil.render(pts);
         checkFirstRender();
 
         if (!mSeekFlag) {
@@ -3707,6 +3843,11 @@ namespace Cicada {
         }
 
         mDemuxerService->SetOption("FRAME_RENDERED", pts);
+
+        if (mSet.bEnableVRC) {
+            mPNotifier->NotifyVideoRendered(timeMs, pts);
+        }
+
         //TODO packetGotTime
     }
 
@@ -3731,6 +3872,13 @@ namespace Cicada {
     {
         if (mVideoRender) {
             mVideoRender->setFlip(convertMirrorMode(mSet.mirrorMode));
+        }
+    }
+
+    void SuperMediaPlayer::ProcessSetVideoBackgroundColor()
+    {
+        if (mVideoRender) {
+            mVideoRender->setBackgroundColor(mSet.mVideoBackgroundColor);
         }
     }
 
@@ -3800,6 +3948,8 @@ namespace Cicada {
         //flush packet queue
         mSeekInCache = SeekInCache(seekPos);
 
+        mPNotifier->NotifySeeking(mSeekInCache);
+
         if (mSeekNeedCatch && !HAVE_VIDEO) {
             mSeekNeedCatch = false;
         }
@@ -3821,7 +3971,7 @@ namespace Cicada {
             if (mSeekNeedCatch) {
                 int64_t videoPos = mBufferController.GetKeyTimePositionBefore(BUFFER_TYPE_VIDEO, mSeekPos);
 
-                if (videoPos < (mSeekPos - SEEK_ACCURATE_MAX)) {
+                if (videoPos < (mSeekPos - mSet.maxASeekDelta)) {
                     // first frame is far away from seek position, don't suppport accurate seek
                     mSeekNeedCatch = false;
                 } else {
@@ -3960,7 +4110,7 @@ namespace Cicada {
     {
         while (!mVideoFrameQue.empty()) {
             int64_t pts = mVideoFrameQue.front()->getInfo().pts;
-            ProcessVideoRenderedMsg(pts, nullptr);
+            ProcessVideoRenderedMsg(pts, af_getsteady_ms(), nullptr);
             mVideoFrameQue.pop();
         }
 
@@ -3980,6 +4130,58 @@ namespace Cicada {
     {
         if (mVideoDecoder) {
             mVideoDecoder->holdOn(hold);
+
+            if (!hold) {
+                int size = mVideoDecoder->getRecoverQueueSize();
+
+                if (size > mSet.maxVideoRecoverSize) {
+                    string des = "video decoder recover size too large:" + AfString::to_string(size);
+                    mPNotifier->NotifyEvent(MEDIA_PLAYER_EVENT_DECODER_RECOVER_SIZE, des.c_str());
+                }
+            }
         }
+    }
+
+    void SuperMediaPlayer::ProcessSetSpeed(float speed)
+    {
+        if (!CicadaUtils::isEqual(mSet.rate, speed)) {
+            if (HAVE_AUDIO) {
+                if (mAudioRender != nullptr) {
+                    mAudioRender->setSpeed(speed);
+                }
+            }
+
+            if (mVideoRender) {
+                mVideoRender->setSpeed(speed);
+            }
+
+            mSet.rate = speed;
+            updateLoopGap();
+            mMasterClock.SetScale(speed);
+        }
+    }
+
+    void SuperMediaPlayer::startRendering(bool start)
+    {
+        if (start == mBRendingStart) {
+            return;
+        }
+
+        mBRendingStart = start;
+
+        if (start) {
+            mMasterClock.start();
+        } else {
+            mMasterClock.pause();
+        }
+
+        if (mAudioRender) {
+            mAudioRender->pause(!start);
+        }
+    }
+    void SuperMediaPlayer::SetOnRenderCallBack(onRenderFrame cb, void *userData)
+    {
+        mFrameCb = cb;
+        mFrameCbUserData = userData;
     }
 }//namespace Cicada

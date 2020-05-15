@@ -18,6 +18,7 @@
 
 #include <utils/file/FileCntl.h>
 #include <utils/mediaTypeInternal.h>
+#include "CacheRet.h"
 
 
 using namespace std;
@@ -35,7 +36,7 @@ public:
 
     ~CacheFileRemuxer();
 
-    void addFrame(const unique_ptr<IAFPacket>& frame, StreamType type);
+    void addFrame(const unique_ptr<IAFPacket> &frame, StreamType type);
 
     bool prepare();
 
@@ -47,11 +48,13 @@ public:
 
     void setErrorCallback(function<void(int, string)> callback);
 
-    void setStreamMeta(const vector<Stream_meta*>& streamMetas);
+    void setResultCallback(function<void(bool)> callback);
 
-    void clearStreamMetas();
+    void setStreamMeta(const vector<Stream_meta *> *streamMetas);
 
 private :
+
+    void sendError(const CacheRet& ret);
 
     void initMuxer();
 
@@ -62,18 +65,20 @@ private :
     static int io_write(void *opaque, uint8_t *buf, int size);
 
     static int io_write_data_type(void *opaque, uint8_t *buf, int size,
-                                  enum ApsaraDataType type, int64_t time);
+                                  IMuxer::DataType type, int64_t time);
 
 
 private:
     string mDestFilePath;
     string mDescription;
-    function<bool(StreamType, Stream_meta *)> mMetaCallback = nullptr;
     deque<std::unique_ptr<FrameInfo>> mFrameInfoQueue;
     condition_variable mQueueCondition;
 
-    bool mInterrupt = false;
-    bool mWantStop = false;
+    std::atomic_bool mInterrupt{false};
+    std::atomic_bool mWantStop {false};
+    std::atomic_bool mFrameEof{false};
+    bool mRemuxSuc = true;
+
 
     mutex mThreadMutex;
     mutex mObjectMutex;
@@ -84,8 +89,9 @@ private:
     FileCntl *mDestFileCntl = nullptr;
 
     function<void(int, string)> mErrorCallback = nullptr;
+    function<void(bool)> mResultCallback = nullptr;
 
-    vector<Stream_meta*> mStreamMetas{};
+    const vector<Stream_meta*> *mStreamMetas = nullptr;
 
 };
 

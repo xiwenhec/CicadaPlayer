@@ -16,10 +16,15 @@
 #include "../../utils/frame_work_log.h"
 #include <data_source/dataSourcePrototype.h>
 #include "../IDemuxer.h"
+#include <utils/af_string.h>
 
 // TODO support active and no active mode
 
 namespace Cicada {
+
+    static const int defaultInitSegSize = 1024 * 1024;
+
+    const char *HLSStream::hls_id3 = "id3v2_priv.com.apple.streaming.transportStreamTimestamp";
 
     HLSStream::HLSStream(SegmentTracker *pTracker, int id)
         : mPTracker(pTracker),
@@ -33,6 +38,10 @@ namespace Cicada {
         delete mThreadPtr;
         delete mPTracker;
         mStreamStartTimeMap.clear();
+
+        if (mInitSegBuffer) {
+            free(mInitSegBuffer);
+        }
     }
 
     int HLSStream::getStreamType()
@@ -71,36 +80,60 @@ namespace Cicada {
             return 0;
         }
 
-        {
-            if (pHandle->mDataSourceStatus == dataSource_status_invalid) {
-                //              AF_LOGD("%s : %d timeout ", __func__, __LINE__);
-                return -EAGAIN;
-            } else if (pHandle->mDataSourceStatus == dataSource_status_error) {
-                return pHandle->mDataSourceError;
-            }
+        if (pHandle->mInitSegBuffer) {
+            int initSegSize = pHandle->mInitSegSize - pHandle->mInitSegPtr;
 
-            if (pHandle->mSegDecrypter == nullptr) {
-                if (pHandle->mExtDataSource) {
-                    ret = pHandle->mExtDataSource->Read(buffer, size);
-                } else {
-                    ret = pHandle->mPdataSource->Read(buffer, (size_t) size);
-                }
+            if (initSegSize > 0) {
+                int readSize = std::min(initSegSize, size);
+                memcpy(buffer, pHandle->mInitSegBuffer + pHandle->mInitSegPtr, readSize);
+                pHandle->mInitSegPtr += readSize;
+                return readSize;
+            }
+        }
+
+        ret = pHandle->readSegment(buffer, size);
+
+        if (pHandle->getStreamType() == STREAM_TYPE_SUB && pHandle->mVttPtsOffSet == INT64_MIN && ret > 0) {
+            pHandle->mVttPtsOffSet = pHandle->mWVTTParser.addBuffer(buffer, ret);
+
+            if (pHandle->mVttPtsOffSet != INT64_MIN) {
+                AF_LOGD("WVTTParser pts is %lld\n", pHandle->mVttPtsOffSet);
+            }
+        }
+
+        return ret;
+    }
+
+    int HLSStream::readSegment(const uint8_t *buffer, int size)
+    {
+        int ret;
+
+        if (mSegDecrypter == nullptr) {
+            if (mExtDataSource) {
+                ret = mExtDataSource->Read((void *) buffer, size);
             } else {
-                ret = pHandle->mSegDecrypter->Read(buffer, size);
+                ret = mPdataSource->Read((void *) buffer, (size_t) size);
             }
+        } else {
+            ret = mSegDecrypter->Read(const_cast<uint8_t *>(buffer), size);
+        }
 
-            if (ret == 0) {//eos
-                pHandle->resetSource();
-                pHandle->mDataSourceStatus = dataSource_status_invalid;
-                AF_LOGI("%s : %d send SEGEND to ffmpeg stream(%d)", __func__, __LINE__,
-                        pHandle->mPTracker->getStreamType());
-                return SEGEND;
-            } else if (ret < 0) {
-                //TODO: deal with error
-                if (ret == FRAMEWORK_ERR_EXIT) {
-                    return -EAGAIN;
-                }
+        return ret;
+    }
+
+    int64_t HLSStream::seekSegment(off_t offset, int whence)
+    {
+        int64_t ret;
+
+        if (mSegDecrypter == nullptr) {
+            if (mExtDataSource) {
+                ret = mExtDataSource->Seek(offset, whence);
+            } else {
+                ret = mPdataSource->Seek(offset, whence);
             }
+        } else {
+            // ret = mSegDecrypter->Read(const_cast<uint8_t *>(buffer), size);
+            return -EINVAL;
         }
 
         return ret;
@@ -125,6 +158,65 @@ namespace Cicada {
 //        pthread_create(&read_thread_id, NULL, read_thread, this);
         return 0;
     }
+
+    int HLSStream::upDateInitSection()
+    {
+        string uri;
+        int ret;
+        mInitSegPtr = 0;
+
+        if (!mCurSeg || !mCurSeg->init_section || mCurInitSeg == mCurSeg->init_section) {
+            return 0;
+        }
+
+        uri = Helper::combinePaths(mPTracker->getBaseUri(), mCurSeg->init_section->mUri);
+        ret = tryOpenSegment(uri, mCurSeg->init_section->rangeStart, mCurSeg->init_section->rangeEnd);
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        mCurInitSeg = mCurSeg->init_section;
+        mInitSegSize = defaultInitSegSize;
+        mInitSegSize = seekSegment(0, SEEK_SIZE);
+
+        if (mInitSegSize < 0) {
+            mInitSegSize = defaultInitSegSize;
+        }
+
+        if (mInitSegBuffer) {
+            free(mInitSegBuffer);
+        }
+
+        mInitSegBuffer = static_cast<uint8_t *>(malloc(mInitSegSize));
+        int size = 0;
+
+        do {
+// TODO: realloc mInitSegBuffer
+            ret = readSegment(mInitSegBuffer + size, mInitSegSize - size);
+
+            if (ret > 0) {
+                size += ret;
+            } else {
+                break;
+            }
+        } while (size < mInitSegSize);
+
+        mInitSegSize = size;
+        return 0;
+    }
+
+    static inline uint64_t getSize(const uint8_t *data, unsigned int len, unsigned int shift)
+    {
+        uint64_t size(0);
+        const uint8_t *dataE(data + len);
+
+        for (; data < dataE; ++data) {
+            size = size << shift | *data;
+        }
+
+        return size;
+    };
 
     int HLSStream::open_internal()
     {
@@ -190,22 +282,17 @@ namespace Cicada {
                 }
             }
 
-            string uri = Helper::combinePaths(mPTracker->getBaseUri(),
-                                              mCurSeg->mUri);
+            ret = upDateInitSection();
+
+            if (ret < 0) {
+                return ret;
+            }
+
+            string uri;
+            uri = Helper::combinePaths(mPTracker->getBaseUri(),
+                                       mCurSeg->mUri);
             AF_LOGD("open uri is %s seq is %llu\n", uri.c_str(), mCurSeg->sequence);
-            int retryTimes = 0;
-
-            do {
-                resetSource();
-                ret = openSegment(uri);
-                retryTimes++;
-
-                if (retryTimes > 2) {
-                    break;
-                }
-
-                af_msleep(20);
-            } while (isHttpError(ret) && !mInterrupted);
+            ret = tryOpenSegment(uri, mCurSeg->rangeStart, mCurSeg->rangeEnd);
 
             if (isHttpError(ret)) {
                 resetSource();
@@ -219,7 +306,6 @@ namespace Cicada {
 
             if (ret < 0) {
                 AF_TRACE;
-                mDataSourceStatus = dataSource_status_error;
                 mDataSourceError = ret;
                 resetSource();
                 return ret;
@@ -230,50 +316,13 @@ namespace Cicada {
             return FRAMEWORK_ERR_EXIT;
         }
 
-        mError = 0;
-        mDataSourceError = 0;
-        ret = updateDecrypter();
-
-        if (ret < 0) {
-            return ret;
-        }
-
-        mDataSourceStatus = dataSource_status_valid;
-        mPDemuxer = new demuxer_service(nullptr);
-        mPDemuxer->setOptions(mOpts);
-        unique_ptr<DemuxerMeta> demuxerMeta = unique_ptr<DemuxerMeta>(new DemuxerMeta());
-        demuxerMeta->ownerUrl = mPTracker->getPlayListUri();
-        mPDemuxer->setDemuxerMeta(demuxerMeta);
-        mPDemuxer->SetDataCallBack(read_callback, this, nullptr, nullptr, nullptr);
-        mPDemuxer->setSampleDecryptor(mSampeAesDecrypter.get());
-        ret = mPDemuxer->createDemuxer(demuxer_type_unknown);
-
-        if (mPDemuxer->getDemuxerHandle()) {
-            mPDemuxer->getDemuxerHandle()->setBitStreamFormat(mMergeVideoHeader, mMergerAudioHeader);
-        }
-
-        ret = mPDemuxer->initOpen();
+        ret = createDemuxer();
 
         if (ret >= 0) {
-            int nbStream = mPDemuxer->GetNbStreams();
-            AF_LOGI("file have %d streams\n", nbStream);
-            // open all stream in demuxer
-            Stream_meta meta{};
-
-            for (int i = 0; i < nbStream; ++i) {
-                mPDemuxer->GetStreamMeta(&meta, i, false);
-
-                if (meta.type == mPTracker->getStreamType()
-                        || mPTracker->getStreamType() == STREAM_TYPE_MIXED) {
-                    mPDemuxer->OpenStream(i);
-                }
-
-                releaseMeta(&meta);
-            }
-
             mIsOpened_internal = true;
         } else {
             AF_LOGE("open demuxer error %d\n", ret);
+            return ret;
         }
 
         //     mStatus = status_inited;
@@ -286,18 +335,168 @@ namespace Cicada {
         return ret;
     }
 
-    int HLSStream::openSegment(const string &uri)
+    int64_t HLSStream::getPackedStreamPTS()
+    {
+        Source_meta *meta = nullptr;
+        mPDemuxer->GetSourceMeta(&meta);
+        int64_t pts = INT64_MIN;
+        Source_meta *meta1 = meta;
+
+        while (meta1 != nullptr) {
+            if (meta1->key && meta1->value) {
+//                AF_LOGD("%s:[%s]", meta1->key, meta1->value);
+                int ptr = 0;
+
+                if (strcmp(meta1->key, hls_id3) == 0) {
+                    uint8_t buf[8];
+                    int v;
+
+                    for (unsigned char &i : buf) {
+                        if (sscanf(meta1->value + ptr, "\\x%02x", &v) == 1) {
+                            ptr += 4;
+                            i = v;
+                        } else {
+                            i = *(meta1->value + ptr);
+                            ptr++;
+                        }
+                    }
+
+                    uint64_t ps = getSize(buf, 8, 8);
+                    pts = ps * 1000 / 90;
+                    //                   AF_LOGD("ps is %u\n", ps);
+                }
+            }
+
+            meta1 = meta1->next;
+        }
+
+        releaseSourceMeta(meta);
+        return pts;
+    }
+
+    int HLSStream::createDemuxer()
+    {
+        int ret;
+        mError = 0;
+        mDataSourceError = 0;
+
+        if (mDemuxerMeta && mDemuxerMeta->id != mCurSeg->discontinuityNum) {
+            mDemuxerMeta = nullptr;
+        }
+
+        ret = updateDecrypter();
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        if (getStreamType() == STREAM_TYPE_SUB) {
+            mWVTTParser.rest();
+            mVttPtsOffSet = INT64_MIN;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(mHLSMutex);
+            mPDemuxer = std::unique_ptr<demuxer_service>(new demuxer_service(nullptr));
+        }
+
+        mPDemuxer->setOptions(this->mOpts);
+        unique_ptr<DemuxerMeta> demuxerMeta = unique_ptr<DemuxerMeta>(new DemuxerMeta());
+        demuxerMeta->ownerUrl = mPTracker->getPlayListUri();
+        mPDemuxer->setDemuxerMeta(demuxerMeta);
+        mPDemuxer->SetDataCallBack(read_callback, this, nullptr, nullptr, nullptr);
+        mPDemuxer->setSampleDecryptor(this->mSampeAesDecrypter.get());
+        ret = mPDemuxer->createDemuxer(demuxer_type_unknown);
+
+        if (ret < 0) {
+            return ret;
+        }
+
+        if (mPDemuxer->getDemuxerHandle()) {
+            mPDemuxer->getDemuxerHandle()->setBitStreamFormat(this->mMergeVideoHeader, this->mMergerAudioHeader);
+        }
+
+        //        if (mDemuxerMeta) {
+        //            mPDemuxer->getDemuxerHandle()->setMeta(mDemuxerMeta.get());
+        //        }
+
+        ret = mPDemuxer->initOpen();
+
+        if (ret >= 0) {
+            int nbStream = mPDemuxer->GetNbStreams();
+            AF_LOGI("file have %d streams\n", nbStream);
+            bool needUpdateMeta = false;
+
+            if (!mDemuxerMeta) {
+                mDemuxerMeta = std::unique_ptr<DemuxerMetaInfo>(new DemuxerMetaInfo());
+                mDemuxerMeta->id = mCurSeg->discontinuityNum;
+                needUpdateMeta = true;
+            }
+
+            unique_ptr<streamMeta> meta = nullptr;
+
+            // open all stream in demuxer
+            for (int i = 0; i < nbStream; ++i) {
+                mPDemuxer->GetStreamMeta(meta, i, false);
+                Stream_type subType = ((Stream_meta *) (*meta))->type;
+                Stream_type trackerType = (Stream_type) mPTracker->getStreamType();
+                AF_LOGD("sub type is %d\n", subType);
+                AF_LOGD("trackerType type is %d\n", trackerType);
+
+                if ((trackerType == STREAM_TYPE_MIXED && subType != STREAM_TYPE_UNKNOWN) || subType == trackerType) {
+                    AF_LOGW("open stream  index is %d\n", i);
+                    mPDemuxer->OpenStream(i);
+                    OpenedStreamIndex = i;
+                }
+
+                if (needUpdateMeta) {
+                    mDemuxerMeta->meta.push_back(move(meta));
+                }
+
+                mDemuxerMeta->bContinue = true;
+            }
+
+            mPacketFirstPts = getPackedStreamPTS();
+        }
+
+        return ret;
+    }
+
+    int HLSStream::tryOpenSegment(const string &uri, int64_t start, int64_t end)
+    {
+        int retryTimes = 0;
+        int ret;
+
+        do {
+            resetSource();
+            ret = openSegment(uri, start, end);
+            retryTimes++;
+
+            if (retryTimes > 2) {
+                break;
+            }
+
+            af_msleep(20);
+        } while (isHttpError(ret) && !mInterrupted);
+
+        return ret;
+    }
+
+    int HLSStream::openSegment(const string &uri, int64_t start, int64_t end)
     {
         int ret;
 
         if (mExtDataSource) {
+            mExtDataSource->setRange(start, end);
             return mExtDataSource->Open(uri);
         }
 
         if (mPdataSource == nullptr) {
             recreateSource(uri);
+            mPdataSource->setRange(start, end);
             ret = mPdataSource->Open(0);
         } else {
+            mPdataSource->setRange(start, end);
             ret = mPdataSource->Open(uri);
         }
 
@@ -478,7 +677,6 @@ namespace Cicada {
         if (mPDemuxer) {
             mPDemuxer->close();
             std::lock_guard<std::mutex> lock(mHLSMutex);
-            delete mPDemuxer;
             mPDemuxer = nullptr;
         }
 
@@ -629,6 +827,67 @@ namespace Cicada {
 
     FILE *file = NULL;
 
+
+    int HLSStream::updateSegment()
+    {
+        shared_ptr<segment> seg = nullptr;
+        AF_LOGD("getCurSegNum is %lld\n", mPTracker->getCurSegNum());
+        seg = mPTracker->getNextSegment();
+        int ret;
+        mCurSeg = nullptr;
+
+        if (seg) {
+            do {
+                mCurSeg = seg;
+                string uri = Helper::combinePaths(mPTracker->getBaseUri(),
+                                                  seg->mUri);
+                ret = tryOpenSegment(uri, seg->rangeStart, seg->rangeEnd);
+
+                if (isHttpError(ret)) {
+                    resetSource();
+                    seg = mPTracker->getNextSegment();
+
+                    if (seg) {
+                        af_msleep(20);
+                        continue;
+                    } else if (mPTracker->isLive()) {
+                        return -EAGAIN;
+                    } else {
+                        //no more seg
+                        break;
+                    }
+                }
+            } while (isHttpError(ret));
+
+            if (ret < 0) {
+                mDataSourceError = ret;
+
+                if (ret != FRAMEWORK_ERR_EXIT) {
+                    mError = ret;
+                }
+
+                resetSource();
+                return ret;
+            }
+
+            AF_LOGD("stream(%p) read seg %s seqno is %llu\n", this, seg->mUri.c_str(),
+                    seg->getSequenceNumber());
+            ret = updateDecrypter();
+
+            if (ret < 0) {
+                return ret;
+            }
+
+            return 0;
+        } else if (mPTracker->getDuration() > 0) {
+            AF_LOGE("EOS");
+            mIsDataEOS = true;
+            return -EAGAIN;
+        }
+
+        return -EAGAIN;
+    }
+
     int HLSStream::read_internal(std::unique_ptr<IAFPacket> &packet)
     {
         //TODO: move read synMsgRst to class member
@@ -647,94 +906,54 @@ namespace Cicada {
                 return ret;
             }
         } else if (ret == FRAMEWORK_ERR_EXIT) {
-            AF_LOGD("mPDemuxer->readPacket FRAMEWORK_ERR_EXIT\n");
+            AF_LOGW("mPDemuxer->readPacket FRAMEWORK_ERR_EXIT\n");
         }
 
-        if (ret == SEGEND) {
-            AF_LOGI("%s : %d receive SEGEND  ffmpeg stream (%d)", __func__, __LINE__,
-                    mPTracker->getStreamType());
-        } else if (mReopen) {
-            //   AF_LOGE("reopen");
-        }
-
-        if (ret == SEGEND && mStopOnSegEnd) {
+        if (ret == 0 && mStopOnSegEnd) {
             mIsEOS = true;
             AF_LOGE("mStopOnSegEnd");
             return -EAGAIN;
         }
 
-        if (ret == SEGEND || mReopen) {
+        if (ret == network_errno_http_range) {
+            ret = 0;
+        }
+
+        if (ret == 0 || mReopen) {
             if (mReopen) {
                 AF_LOGD("reopen");
                 mReopen = false;
             }
 
-            shared_ptr<segment> seg = nullptr;
-            AF_LOGD("getCurSegNum is %lld\n", mPTracker->getCurSegNum());
-            seg = mPTracker->getNextSegment();
+            ret = updateSegment();
 
-            if (seg) {
-                do {
-                    mCurSeg = seg;
-                    // TODO: use the same dataSource
-                    //TODO: interrupt dataSource and return error
-                    string uri = Helper::combinePaths(mPTracker->getBaseUri(),
-                                                      seg->mUri);
-                    int retryTimes = 0;
+            if (mIsDataEOS) {
+                return 0;
+            }
 
-                    do {
-                        resetSource();
-                        ret = openSegment(uri);
-                        retryTimes++;
+            if (ret >= 0) {
+                upDateInitSection();
+                ret = createDemuxer();
 
-                        if (retryTimes > 2) {
-                            break;
+                if (ret >= 0) {
+                    int nbStream = mPDemuxer->GetNbStreams();
+                    AF_LOGI("file have %d streams\n", nbStream);
+                    // open all stream in demuxer
+                    Stream_meta meta{};
+
+                    for (int i = 0; i < nbStream; ++i) {
+                        mPDemuxer->GetStreamMeta(&meta, i, false);
+
+                        if (meta.type == mPTracker->getStreamType()
+                                || (mPTracker->getStreamType() == STREAM_TYPE_MIXED && meta.type != STREAM_TYPE_UNKNOWN)) {
+                            mPDemuxer->OpenStream(i);
                         }
 
-                        af_msleep(20);
-                    } while (isHttpError(ret));
-
-                    if (isHttpError(ret)) {
-                        resetSource();
-                        seg = mPTracker->getNextSegment();
-
-                        if (seg) {
-                            af_msleep(20);
-                            continue;
-                        } else if (mPTracker->isLive()) {
-                            return -EAGAIN;
-                        } else {
-                            //no more seg
-                            break;
-                        }
-                    }
-                } while (isHttpError(ret));
-
-                if (ret < 0) {
-                    mDataSourceStatus = dataSource_status_error;
-                    mDataSourceError = ret;
-
-                    if (ret != FRAMEWORK_ERR_EXIT) {
-                        mError = ret;
+                        releaseMeta(&meta);
                     }
 
-                    resetSource();
-                    return ret;
+                    mPacketFirstPts = getPackedStreamPTS();
                 }
-
-                AF_LOGD("stream(%p) read seg %s seqno is %llu\n", this, seg->mUri.c_str(),
-                        seg->getSequenceNumber());
-                ret = updateDecrypter();
-
-                if (ret < 0) {
-                    return ret;
-                }
-
-                mDataSourceStatus = dataSource_status_valid;
-            } else if (mPTracker->getDuration() > 0) {
-                AF_LOGE("EOS");
-                mIsDataEOS = true;
-                //  return 0;
             }
 
             packet = nullptr;
@@ -742,34 +961,10 @@ namespace Cicada {
         }
 
         if (ret == -EAGAIN && mPTracker->getDuration() == 0) {
-            shared_ptr<segment> seg = nullptr;
-            seg = mPTracker->getNextSegment();
+            ret = updateSegment();
 
-            if (seg) {
-                mCurSeg = seg;
-                string uri = Helper::combinePaths(mPTracker->getBaseUri(), seg->mUri);
-                ret = openSegment(uri);
-
-                if (ret < 0) {
-                    mDataSourceStatus = dataSource_status_error;
-                    mDataSourceError = ret;
-
-                    if (ret != FRAMEWORK_ERR_EXIT) {
-                        mError = ret;
-                    }
-
-                    resetSource();
-                    return ret;
-                }
-
-                AF_LOGD("stream (%d) read seg %s\n", mPTracker->getStreamType(), seg->mUri.c_str());
-                ret = updateDecrypter();
-
-                if (ret < 0) {
-                    return ret;
-                }
-
-                mDataSourceStatus = dataSource_status_valid;
+            if (ret < 0) {
+                return ret;
             }
 
             return -EAGAIN;
@@ -777,6 +972,20 @@ namespace Cicada {
 
         if (packet != nullptr) {
             //  AF_LOGD("read a frame \n");
+            if (mPTracker->getStreamType() != STREAM_TYPE_MIXED) {
+                packet->getInfo().streamIndex = 0;
+            }
+
+            if (mPacketFirstPts != INT64_MIN && packet->getInfo().pts != INT64_MIN) {
+                packet->getInfo().pts += mPacketFirstPts;
+                packet->getInfo().dts += mPacketFirstPts;
+            }
+
+            if (mVttPtsOffSet != INT64_MIN && packet->getInfo().pts != INT64_MIN) {
+                packet->getInfo().pts += mVttPtsOffSet;
+                packet->getInfo().dts += mVttPtsOffSet;
+            }
+
             if (mCurSeg) {
                 // mark the seg start time to first seg frame
                 AF_LOGD("stream (%d) mark startTime %llu\n", mPTracker->getStreamType(),
@@ -855,23 +1064,20 @@ namespace Cicada {
         meta->type = (Stream_type) mPTracker->getStreamType();
 
         if (meta->type != STREAM_TYPE_MIXED) {
-            index = 0;
+            index = OpenedStreamIndex;
         }
 
-//        if (mPTracker->getStreamType() == STREAM_TYPE_UNKNOWN) {
-//            if (mPDemuxer) {
-//                return mPDemuxer->GetStreamMeta(meta, index);
-//            }
-//            //   return -1;
-//        }
         uint64_t bandwidth;
         std::string lang;
         int width;
         int height;
         mPTracker->getStreamInfo(&width, &height, &bandwidth, lang);
+        {
+            std::lock_guard<std::mutex> lock(mHLSMutex);
 
-        if (mPDemuxer) {
-            mPDemuxer->GetStreamMeta(meta, index, sub);
+            if (mPDemuxer) {
+                mPDemuxer->GetStreamMeta(meta, index, sub);
+            }
         }
 
         // meta->type would be override, recover it
@@ -934,7 +1140,6 @@ namespace Cicada {
         }
 
         resetSource();
-        mDataSourceStatus = dataSource_status_invalid;
         {
             std::lock_guard<std::mutex> lock(mHLSMutex);
 
@@ -949,6 +1154,8 @@ namespace Cicada {
                 delete mSegKeySource;
                 mSegKeySource = nullptr;
             }
+
+            mIsOpened_internal = false;
         }
         clearDataFrames();
         AF_LOGD("%s\n", __func__);
@@ -993,12 +1200,17 @@ namespace Cicada {
         AF_LOGD("%s:%d stream (%d) usSeeked is %lld seek num is %d\n", __func__, __LINE__,
                 mPTracker->getStreamType(), usSought, num);
 
-        if (mPTracker->getStreamType() == STREAM_TYPE_SUB && mPTracker->getSegSize() == 1) {
+        if (mPTracker->getStreamType() == STREAM_TYPE_SUB && num == mPTracker->getCurSegNum()) {
             AF_LOGW("only one  subtitle seg");
             reqReOpen = false;
+            seek_internal(num, us);
         }
 
-        mSwitchNeedBreak = true;
+        {
+            std::unique_lock<std::mutex> waitLock(mDataMutex);
+            mSwitchNeedBreak = true;
+        }
+
         mWaitCond.notify_one();
         interrupt_internal(1);
 
@@ -1011,7 +1223,6 @@ namespace Cicada {
         clearDataFrames();
 
         if (reqReOpen) {
-            mDataSourceStatus = dataSource_status_invalid;
             resetSource();
 
             if (mIsOpened_internal) {
@@ -1022,10 +1233,10 @@ namespace Cicada {
             mPTracker->setCurSegNum(num);
         }
 
-        seek_internal(num, us);
         mIsEOS = false;
         mIsDataEOS = false;
         mError = 0;
+        mDemuxerMeta->bContinue = false;
 
         if (mThreadPtr) {
             mThreadPtr->start();
@@ -1066,14 +1277,11 @@ namespace Cicada {
 
     int HLSStream::reopenSegment(uint64_t num, OpenType openType)
     {
-        bool reqReOpen = true;
-
-        if (mPTracker->getStreamType() == STREAM_TYPE_SUB && mPTracker->getSegSize() == 1) {
-            AF_LOGW("only one  subtitle seg");
-            reqReOpen = false;
+        {
+            std::unique_lock<std::mutex> waitLock(mDataMutex);
+            mSwitchNeedBreak = true;
         }
 
-        mSwitchNeedBreak = true;
         mWaitCond.notify_one();
 
         if (mThreadPtr) {
@@ -1082,23 +1290,19 @@ namespace Cicada {
 
         mSwitchNeedBreak = false;
         clearDataFrames();
+        resetSource();
 
-        if (reqReOpen) {
-            mDataSourceStatus = dataSource_status_invalid;
-            resetSource();
+        if (mIsOpened_internal) {
+            mReopen = true;
+            num--;
+        }
 
-            if (mIsOpened_internal) {
-                mReopen = true;
-                num--;
-            }
-
-            if (openType == OpenType::SegNum) {
-                mPTracker->setCurSegNum(num);
-                AF_LOGD("setCurSegNum %llu\n", num);
-            } else if (openType == OpenType::SegPosition) {
-                mPTracker->setCurSegPosition(num);
-                AF_LOGD("setCurSegPosition %llu\n", num);
-            }
+        if (openType == OpenType::SegNum) {
+            mPTracker->setCurSegNum(num);
+            AF_LOGD("setCurSegNum %llu\n", num);
+        } else if (openType == OpenType::SegPosition) {
+            mPTracker->setCurSegPosition(num);
+            AF_LOGD("setCurSegPosition %llu\n", num);
         }
 
         seek_internal(num, 0);
@@ -1144,7 +1348,10 @@ namespace Cicada {
 
     void HLSStream::interrupt(int inter)
     {
-        mInterrupted = static_cast<bool>(inter);
+        {
+            std::unique_lock<std::mutex> waitLock(mDataMutex);
+            mInterrupted = static_cast<bool>(inter);
+        }
         interrupt_internal(inter);
     }
 
@@ -1165,9 +1372,12 @@ namespace Cicada {
                 mExtDataSource->Interrupt(static_cast<bool>(inter));
             }
         }
+        {
+            std::lock_guard<std::mutex> lock(mHLSMutex);
 
-        if (mPDemuxer) {
-            mPDemuxer->interrupt(inter);
+            if (mPDemuxer) {
+                mPDemuxer->interrupt(inter);
+            }
         }
 
         if (mPTracker) {
@@ -1198,4 +1408,98 @@ namespace Cicada {
         return "";
     }
 
+    HLSStream::WebVttParser::WebVttParser() = default;
+
+    HLSStream::WebVttParser::~WebVttParser()
+    {
+        if (mBuffer) {
+            free(mBuffer);
+        }
+    }
+
+    static int64_t read_ts(const char *s)
+    {
+        int hh, mm, ss, ms;
+
+        if (sscanf(s, "%u:%u:%u.%u", &hh, &mm, &ss, &ms) == 4) {
+            return (hh * 3600LL + mm * 60LL + ss) * 1000LL + ms;
+        }
+
+        if (sscanf(s, "%u:%u.%u", &mm, &ss, &ms) == 3) {
+            return (mm * 60LL + ss) * 1000LL + ms;
+        }
+
+        return INT64_MIN;
+    }
+
+    int64_t HLSStream::WebVttParser::addBuffer(uint8_t *buffer, int size)
+    {
+        if (bFinished) {
+            return mMapPTS;
+        }
+
+        char *lend;
+
+        if ((lend = strnstr((const char *) buffer, "\n\n", size)) != nullptr
+                || (lend = strnstr((const char *) buffer, "\r\n\r\n", size)) != nullptr) {
+            bFinished = true;
+        }
+
+        size_t append_size = size;
+
+        if (lend != nullptr) {
+            append_size = lend - (const char *) buffer;
+        }
+
+        uint8_t *new_data = static_cast<uint8_t *>(realloc(mBuffer, mSize + append_size));
+
+        if (new_data) {
+            mBuffer = new_data;
+        } else {
+            return mMapPTS;
+        }
+
+        memcpy(mBuffer + mSize, buffer, append_size);
+        mSize += append_size;
+
+        if (!bFinished) {
+            return INT64_MIN;
+        }
+
+        mBuffer[mSize - 1] = 0;
+        /*
+        * WebVTT files in HLS streams contain a timestamp offset for
+        * syncing with the main stream:
+        *
+        * X-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:900000
+        * (LOCAL and MPEGTS can be reversed even though HLS spec
+        *  does not say so)
+        */
+        char *hls_timestamp_map = strstr(reinterpret_cast<char *>(mBuffer), "\nX-TIMESTAMP-MAP=");
+
+        if (hls_timestamp_map == nullptr) {
+            return mMapPTS;
+        }
+
+        char *native_str = strstr(hls_timestamp_map, "LOCAL:");
+        char *mpegts_str = strstr(hls_timestamp_map, "MPEGTS:");
+
+        if (native_str && mpegts_str) {
+            int64_t native_ts = read_ts(native_str + 6);
+            int64_t mpegts_ts = strtoll(mpegts_str + 7, nullptr, 10);
+
+            if (native_ts != INT64_MIN) {
+                mMapPTS = mpegts_ts * 100 / 9 - native_ts * 1000;
+            }
+        }
+
+        return mMapPTS;
+    }
+
+    void HLSStream::WebVttParser::rest()
+    {
+        mSize = 0;
+        mMapPTS = INT64_MIN;
+        bFinished = false;
+    }
 }

@@ -10,6 +10,7 @@
 #include <utils/AFMediaType.h>
 #include <cassert>
 #include <cstdlib>
+#include <render/video/glRender/base/utils.h>
 
 using namespace std;
 
@@ -38,6 +39,7 @@ GLRender::GLRender(float Hz)
     mVSyncPeriod = static_cast<int64_t>(1000000 / Hz);
 #if TARGET_OS_IPHONE
     IOSNotificationManager::Instance()->RegisterObserver(this, 0);
+    mInBackground = IOSNotificationManager::Instance()->GetActiveStatus() == 0;
     setenv("METAL_DEVICE_WRAPPER_TYPE", "0", 1);
 //   setenv("CG_CONTEXT_SHOW_BACKTRACE", "1", 1);
 #endif
@@ -56,12 +58,13 @@ GLRender::~GLRender()
 int GLRender::init()
 {
     AF_LOGD("-----> init .");
-    mVSync->start();
-//    std::unique_lock<std::mutex> locker(mInitMutex);
-//    mInitCondition.wait(locker, [this]() -> int {
-//        return mInitRet != INT32_MIN;
-//    });
-//    return mInitRet;
+    // don't auto start in background
+    std::unique_lock<std::mutex> locker(mInitMutex);
+
+    if (!mInBackground) {
+        mVSync->start();
+    }
+
     return 0;
 }
 
@@ -82,13 +85,19 @@ int GLRender::renderFrame(std::unique_ptr<IAFFrame> &frame)
     if (frame == nullptr) {
         // do flush
         mVSync->pause();
-        std::unique_lock<std::mutex> locker(mFrameMutex);
+        {
+            std::unique_lock<std::mutex> locker(mFrameMutex);
 
-        while (!mInputQueue.empty()) {
-            dropFrame();
+            while (!mInputQueue.empty()) {
+                dropFrame();
+            }
+        }
+        std::unique_lock<std::mutex> locker(mInitMutex);
+
+        if (!mInBackground) {
+            mVSync->start();
         }
 
-        mVSync->start();
         return 0;
     }
 
@@ -136,7 +145,24 @@ int GLRender::setScale(IVideoRender::Scale scale)
 }
 
 
+void GLRender::setBackgroundColor(uint32_t color)
+{
+    mBackgroundColor = color;
+};
+
 int GLRender::onVSync(int64_t tick)
+{
+    int ret = onVsyncInner(tick);
+#ifdef __ANDROID__
+    {
+        unique_lock<mutex> lock(mRenderCallbackMutex);
+        mRenderCallbackCon.notify_one();
+    }
+#endif
+    return ret;
+}
+
+int GLRender::onVsyncInner(int64_t tick)
 {
     if (mInitRet == INT32_MIN) {
         VSyncOnInit();
@@ -210,7 +236,7 @@ void GLRender::calculateFPS(int64_t tick)
             mRendertimeS++;
         }
 
-        AF_LOGI("video fps is %llu\n", mRenderCount);
+        AF_LOGD("video fps is %llu\n", mRenderCount);
         mFps = mRenderCount;
         mRenderCount = 0;
     }
@@ -227,7 +253,7 @@ int GLRender::VSyncOnInit()
     mInitCondition.notify_all();
 
     if (mInitRet != 0) {
-        AF_LOGE("GLContext init failed. ret = %d ", mInitRet);
+        AF_LOGE("GLContext init failed. ret = %d ", mInitRet.load());
         return -EINVAL;
     }
 
@@ -260,6 +286,8 @@ bool GLRender::renderActually()
 
     if (needCreateOutTexture) {
         IProgramContext *programContext = getProgram(AF_PIX_FMT_CICADA_MEDIA_CODEC);
+        programContext->createSurface();
+        std::unique_lock<std::mutex> locker(mCreateOutTextureMutex);
         needCreateOutTexture = false;
         mCreateOutTextureCondition.notify_all();
     }
@@ -332,6 +360,7 @@ bool GLRender::renderActually()
     mProgramContext->updateRotate(finalRotate);
     mProgramContext->updateWindowSize(mWindowWidth, mWindowHeight, displayViewChanged);
     mProgramContext->updateFlip(mFlip);
+    mProgramContext->updateBackgroundColor(mBackgroundColor);
     int ret = mProgramContext->updateFrame(frame);
     //work around for glReadPixels is upside-down.
     {
@@ -374,12 +403,14 @@ bool GLRender::renderActually()
 
     if (mClearScreenOn) {
         glViewport(0, 0, mWindowWidth, mWindowHeight);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        unsigned int backgroundColor = mBackgroundColor;
+        float color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        cicada::convertToGLColor(backgroundColor, color);
+        glClearColor(color[0], color[1], color[2], color[3]);
         glClear(GL_COLOR_BUFFER_BIT);
         mContext->Present(mGLSurface);
 
         if (mProgramContext != nullptr) {
-            mPrograms.erase(mProgramFormat);
             mProgramFormat = -1;
             mProgramContext = nullptr;
         }
@@ -420,8 +451,20 @@ void GLRender::captureScreen()
 int GLRender::setDisPlay(void *view)
 {
     AF_LOGD("-----> setDisPlay view = %p", view);
-    unique_lock<mutex> viewLock(mViewMutex);
-    mDisplayView = view;
+
+    if (mDisplayView != view) {
+        mVSync->pause();
+        {
+            unique_lock<mutex> viewLock(mViewMutex);
+            mDisplayView = view;
+        }
+        std::unique_lock<std::mutex> locker(mInitMutex);
+
+        if (!mInBackground) {
+            mVSync->start();
+        }
+    }
+
     return 0;
 }
 
@@ -496,7 +539,8 @@ IProgramContext *GLRender::getProgram(int frameFormat, IAFFrame *frame)
         }
     } else
 #endif
-        if (frameFormat == AF_PIX_FMT_YUV420P || frameFormat == AF_PIX_FMT_YUVJ420P) {
+        if (frameFormat == AF_PIX_FMT_YUV420P || frameFormat == AF_PIX_FMT_YUVJ420P
+                || frameFormat == AF_PIX_FMT_YUV422P || frameFormat == AF_PIX_FMT_YUVJ422P) {
             targetProgram = unique_ptr<IProgramContext>(new YUVProgramContext());
         }
 
@@ -528,6 +572,7 @@ void GLRender::setSpeed(float speed)
 
 void GLRender::AppWillResignActive()
 {
+    std::unique_lock<std::mutex> locker(mInitMutex);
     mInBackground = true;
     AF_LOGE("0919, mInBackground = true");
     mVSync->pause();
@@ -535,6 +580,7 @@ void GLRender::AppWillResignActive()
 
 void GLRender::AppDidBecomeActive()
 {
+    std::unique_lock<std::mutex> locker(mInitMutex);
     mInBackground = false;
     AF_LOGE("0919, mInBackground = false");
     mVSync->start();
@@ -550,4 +596,18 @@ float GLRender::getRenderFPS()
 void GLRender::setRenderResultCallback(function<void(int64_t, bool)> renderResultCallback)
 {
     mRenderResultCallback = renderResultCallback;
-};
+}
+
+void GLRender::surfaceChanged()
+{
+#ifdef __ANDROID__
+
+    if (mInitRet == INT32_MIN || mInitRet != 0) {
+        return ;
+    }
+
+    std::unique_lock<mutex> lock(mRenderCallbackMutex);
+    mRenderCallbackCon.wait(lock);
+#endif
+}
+

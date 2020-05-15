@@ -119,17 +119,17 @@ namespace Cicada {
             bool mixedVideo = false;
             bool mixedAudio = false;
 
-            if ((codecAttr->value.find_first_of("avc") != std::string::npos
-                 || codecAttr->value.find_first_of("hvc") != std::string::npos)
-                && !videoAttr) {
+            if ((codecAttr->value.find("avc") != std::string::npos
+                    || codecAttr->value.find("hvc") != std::string::npos)
+                    && !videoAttr) {
                 mixedVideo = true;
             }
 
-            if ((codecAttr->value.find_first_of("mp4a") != std::string::npos
-                 || codecAttr->value.find_first_of("ac-3") != std::string::npos
-                 || codecAttr->value.find_first_of("ec-3") != std::string::npos
+            if ((codecAttr->value.find("mp4a") != std::string::npos
+                    || codecAttr->value.find("ac-3") != std::string::npos
+                    || codecAttr->value.find("ec-3") != std::string::npos
                 )
-                && !audioAttr) {
+                    && !audioAttr) {
                 mixedAudio = true;
             }
 
@@ -162,12 +162,13 @@ namespace Cicada {
         mtime_t nzStartTime = 0;
         mtime_t absReferenceTime = 0;
         uint64_t sequenceNumber = 0;
-        bool discontinuity = false;
+        uint64_t discontinuityNum = 0;
         std::size_t prevbyterangeoffset = 0;
         const SingleValueTag *ctx_byterange = nullptr;
         SegmentEncryption encryption;
         const ValuesListTag *ctx_extinf = nullptr;
         std::list<Tag *>::const_iterator it;
+        std::shared_ptr<segment> curInitSegment = nullptr;
 
         for (it = tagslist.begin(); it != tagslist.end(); ++it) {
             const Tag *tag = *it;
@@ -219,6 +220,7 @@ namespace Cicada {
 //                        segment->utcTime = absReferenceTime;
 //                        absReferenceTime += nzDuration;
 //                    }
+                    pSegment->init_section = curInitSegment;
                     segmentList->addSegment(pSegment);
 
                     if (ctx_byterange) {
@@ -229,14 +231,11 @@ namespace Cicada {
                         }
 
                         prevbyterangeoffset = range.first + range.second;
-                        //   segment->setByteRange(range.first, prevbyterangeoffset - 1);
+                        pSegment->setByteRange(range.first, prevbyterangeoffset - 1);
                         ctx_byterange = nullptr;
                     }
 
-                    if (discontinuity) {
-                        //    segment->discontinuity = true;
-                        discontinuity = false;
-                    }
+                    pSegment->discontinuityNum = discontinuityNum;
 
                     if (encryption.method != SegmentEncryption::NONE) {
                         pSegment->setEncryption(encryption);
@@ -313,28 +312,30 @@ namespace Cicada {
                 }
                 break;
 
-//                case AttributesTag::EXTXMAP: {
-//                    const AttributesTag *keytag = static_cast<const AttributesTag *>(tag);
-//                    const Attribute *uriAttr;
-//                    if (keytag && (uriAttr = keytag->getAttributeByName("URI")) &&
-//                        !segmentList->initialisationSegment.Get()) /* FIXME: handle discontinuities */
-//                    {
-//                        InitSegment *initSegment = new(std::nothrow) InitSegment(rep);
-//                        if (initSegment) {
-//                            initSegment->setSourceUrl(uriAttr->quotedString());
-//                            const Attribute *byterangeAttr = keytag->getAttributeByName("BYTERANGE");
-//                            if (byterangeAttr) {
-//                                const std::pair<std::size_t, std::size_t> range = byterangeAttr->unescapeQuotes().getByteRange();
-//                                initSegment->setByteRange(range.first, range.first + range.second - 1);
-//                            }
-//                            segmentList->initialisationSegment.Set(initSegment);
-//                        }
-//                    }
-//                }
-//                    break;
+                case AttributesTag::EXTXMAP: {
+                    const AttributesTag *keytag = static_cast<const AttributesTag *>(tag);
+                    const Attribute *uriAttr;
+
+                    if (keytag && (uriAttr = keytag->getAttributeByName("URI"))) {
+                        curInitSegment = std::make_shared<segment>(sequenceNumber++);
+
+                        if (curInitSegment) {
+                            curInitSegment->setSourceUrl(uriAttr->quotedString());
+                            const Attribute *byterangeAttr = keytag->getAttributeByName("BYTERANGE");
+
+                            if (byterangeAttr) {
+                                const std::pair<std::size_t, std::size_t> range = byterangeAttr->unescapeQuotes().getByteRange();
+                                //   initSegment->setByteRange(range.first, range.first + range.second - 1);
+                            }
+
+                            segmentList->addInitSegment(curInitSegment);
+                        }
+                    }
+                }
+                break;
 
                 case Tag::EXTXDISCONTINUITY:
-                    discontinuity = true;
+                    discontinuityNum++;
                     break;
 
                 case Tag::EXTXENDLIST:
@@ -418,13 +419,18 @@ namespace Cicada {
             /* We'll need to create an adaptation set for each media group / alternative rendering
              * we create a list of playlist being and alternative/group */
             std::list<Tag *> mediaInfoTags = getTagsFromList(tagsList, AttributesTag::EXTXMEDIA);
+            std::list<AttributesTag *> dummyMediaInfoTags{};
 
             for (it = mediaInfoTags.begin(); it != mediaInfoTags.end(); ++it) {
                 auto *tag = dynamic_cast<AttributesTag *>(*it);
 
-                if (tag && tag->getAttributeByName("URI")) {
-                    std::pair<std::string, AttributesTag *> pair(tag->getAttributeByName("URI")->quotedString(), tag);
-                    groupsMap.insert(pair);
+                if (tag) {
+                    if (tag->getAttributeByName("URI")) {
+                        std::pair<std::string, AttributesTag *> pair(tag->getAttributeByName("URI")->quotedString(), tag);
+                        groupsMap.insert(pair);
+                    } else {
+                        dummyMediaInfoTags.push_back(tag);
+                    }
                 }
             }
 
@@ -438,6 +444,37 @@ namespace Cicada {
                     if (groupsMap.find(tag->getAttributeByName("URI")->value) == groupsMap.end()) {
                         /* not a group, belong to default adaptation set */
                         auto *represent = createRepresentation(adaptSet, tag);
+
+                        if (represent->mStreamType != STREAM_TYPE_MIXED && !dummyMediaInfoTags.empty()) {
+                            const Attribute *videoAttr = tag->getAttributeByName("VIDEO");
+                            const Attribute *audioAttr = tag->getAttributeByName("AUDIO");
+
+                            for (auto item : dummyMediaInfoTags) {
+                                const Attribute *group = item->getAttributeByName("GROUP-ID");
+
+                                if (!group || group->value.empty()) {
+                                    continue;
+                                }
+
+                                AF_LOGD("group name is %s\n", group->value.c_str());
+
+                                if ((videoAttr && group->value == videoAttr->value && represent->mStreamType != STREAM_TYPE_VIDEO) ||
+                                        (audioAttr && group->value == audioAttr->value && represent->mStreamType != STREAM_TYPE_AUDIO)) {
+                                    if (represent->mStreamType == STREAM_TYPE_UNKNOWN) {
+                                        if (audioAttr) {
+                                            represent->mStreamType = STREAM_TYPE_AUDIO;
+                                        } else {
+                                            represent->mStreamType = STREAM_TYPE_VIDEO;
+                                        }
+                                    } else {
+                                        represent->mStreamType = STREAM_TYPE_MIXED;
+                                    }
+
+                                    break;
+                                }
+                            }
+                        }
+
                         adaptSet->addRepresentation(represent);
                     }
                 }

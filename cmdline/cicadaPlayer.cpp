@@ -2,6 +2,11 @@
 #include <memory>
 #include <utils/timer.h>
 
+#ifdef ENABLE_SDL
+#define SDL_MAIN_HANDLED
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_main.h>
+#endif
 using namespace Cicada;
 using namespace std;
 
@@ -9,17 +14,13 @@ using namespace std;
 #include "cicadaEventListener.h"
 #include "NetWorkEventReceiver.h"
 
-#ifdef ENABLE_SDL
-#include <SDL2/SDL_main.h>
-#define SDL_MAIN_HANDLED
-#endif
-
 #include <media_player_error_def.h>
 
 using IEvent = IEventReceiver::IEvent;
 struct cicadaCont {
     MediaPlayer *player;
     IEventReceiver *receiver;
+    bool error;
 };
 
 static void onVideoSize(int64_t width, int64_t height, void *userData)
@@ -27,16 +28,19 @@ static void onVideoSize(int64_t width, int64_t height, void *userData)
     AF_TRACE;
     using IEvent = IEventReceiver::IEvent;
     auto *cont = static_cast<cicadaCont *>(userData);
-    auto *event = new IEvent(IEvent::TYPE_SET_VIEW);
-    if (cont->receiver)
-        cont->receiver->push(std::unique_ptr<IEvent>(event));
+
+    if (cont->receiver) {
+        cont->receiver->push(std::unique_ptr<IEvent>(new IEvent(IEvent::TYPE_SET_VIEW)));
+    }
 }
 
 static void onEOS(void *userData)
 {
     auto *cont = static_cast<cicadaCont *>(userData);
-    auto *event = new IEvent(IEvent::TYPE_EXIT);
-    cont->receiver->push(std::unique_ptr<IEvent>(event));
+
+    if (cont->receiver) {
+        cont->receiver->push(std::unique_ptr<IEvent>(new IEvent(IEvent::TYPE_EXIT)));
+    }
 }
 
 static void onEvent(int64_t errorCode, const void *errorMsg, void *userData)
@@ -65,11 +69,15 @@ static void onError(int64_t errorCode, const void *errorMsg, void *userData)
         AF_LOGE("%s\n", errorMsg);
     }
 
-    auto *event = new IEvent(IEvent::TYPE_EXIT);
-    cont->receiver->push(std::unique_ptr<IEvent>(event));
+    if (cont->receiver) {
+        auto *event = new IEvent(IEvent::TYPE_EXIT);
+        cont->receiver->push(std::unique_ptr<IEvent>(event));
+    } else {
+        cont->error = true;
+    }
 }
 
-int main(int argc, const char **argv)
+int main(int argc, char *argv[])
 {
     string url;
 
@@ -79,6 +87,8 @@ int main(int argc, const char **argv)
         url = "http://player.alicdn.com/video/aliyunmedia.mp4";
     }
 
+    log_enable_color(1);
+    log_set_level(AF_LOG_LEVEL_TRACE, 1);
     cicadaCont cicada{};
     unique_ptr<MediaPlayer> player = unique_ptr<MediaPlayer>(new MediaPlayer());
     cicada.player = player.get();
@@ -97,16 +107,16 @@ int main(int argc, const char **argv)
     player->SetView(&view);
 #endif
     NetWorkEventReceiver netWorkEventReceiver(eListener);
-
     player->SetListener(pListener);
-    player->SetDefaultBandWidth(100000000);
+    player->SetDefaultBandWidth(1000 * 1000);
     player->SetDataSource(url.c_str());
     player->SetAutoPlay(true);
     player->SetLoop(true);
     player->Prepare();
+    player->SelectTrack(-1);
     bool quite = false;
 
-    while (!quite) {
+    while (!quite && !cicada.error) {
 #ifdef ENABLE_SDL
         receiver.poll(quite);
 #endif

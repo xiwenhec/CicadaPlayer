@@ -24,10 +24,12 @@ namespace Cicada {
             case MSG_SET_DISPLAY_MODE:
             case MSG_SET_ROTATE_MODE:
             case MSG_SET_MIRROR_MODE:
+            case MSG_SET_VIDEO_BACKGROUND_COLOR:
                 return REPLACE_ALL;
 
             case MSG_START:
             case MSG_PAUSE:
+            case MSG_SET_SPEED:
                 return REPLACE_LAST;
 
             case MSG_SEEKTO:
@@ -180,6 +182,7 @@ namespace Cicada {
 
     bool PlayerMessageControl::empty()
     {
+        ADD_LOCK;
         return mMsgQueue.empty();
     }
 
@@ -231,6 +234,10 @@ namespace Cicada {
                 mProcessor.ProcessSetMirrorMode();
                 break;
 
+            case MSG_SET_VIDEO_BACKGROUND_COLOR:
+                mProcessor.ProcessSetVideoBackgroundColor();
+                break;
+
             case MSG_SEEKTO:
                 mProcessor.ProcessSeekToMsg(msgContent.seekParam.seekPos, msgContent.seekParam.bAccurate);
                 break;
@@ -256,6 +263,7 @@ namespace Cicada {
 
             case MSG_INTERNAL_VIDEO_RENDERED:
                 mProcessor.ProcessVideoRenderedMsg(msgContent.videoRenderedParam.pts,
+                                                   msgContent.videoRenderedParam.timeMs,
                                                    msgContent.videoRenderedParam.userData);
                 break;
 
@@ -274,6 +282,10 @@ namespace Cicada {
             case MSG_SELECT_EXT_SUBTITLE:
                 mProcessor.ProcessSelectExtSubtitleMsg(msgContent.msgSelectExtSubtitleParam.index,
                                                        msgContent.msgSelectExtSubtitleParam.bSelect);
+                break;
+
+            case MSG_SET_SPEED:
+                mProcessor.ProcessSetSpeed(msgContent.msgSpeedParam.speed);
                 break;
 
             default:

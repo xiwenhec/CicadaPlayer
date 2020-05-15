@@ -1312,27 +1312,6 @@
 /**
  测试属性，设置再读取，看是否正确
  */
-- (void)testMaxProbeSize_default {
-    [self.playerViewController initPlayer];
-    CicadaConfig *config = [self.playerViewController.player getConfig];
-    XCTAssertEqual(config.maxProbeSize,-1,@"maxProbeSize默认属性错误");
-    
-}
-
-/**
- 测试属性，设置再读取，看是否正确
- */
-- (void)testMaxProbeSize {
-    [self.playerViewController initPlayer];
-    CicadaConfig *config = [self.playerViewController.player getConfig];
-    config.maxProbeSize = 8000;
-    XCTAssertEqual(config.maxProbeSize,8000,@"maxProbeSize属性设置错误");
-    
-}
-
-/**
- 测试属性，设置再读取，看是否正确
- */
 - (void)testReferer_default {
     [self.playerViewController initPlayer];
     CicadaConfig *config = [self.playerViewController.player getConfig];
@@ -1369,27 +1348,6 @@
     CicadaConfig *config = [self.playerViewController.player getConfig];
     config.httpProxy = @"https";
     XCTAssertEqual(config.httpProxy,@"https",@"httpProxy属性设置错误");
-    
-}
-
-/**
- 测试属性，设置再读取，看是否正确
- */
-- (void)testUserAgent_default {
-    [self.playerViewController initPlayer];
-    CicadaConfig *config = [self.playerViewController.player getConfig];
-    XCTAssertTrue(config.userAgent.length == 0, @"userAgent默认属性错误");
-    
-}
-
-/**
- 测试属性，设置再读取，看是否正确
- */
-- (void)testUserAgent {
-    [self.playerViewController initPlayer];
-    CicadaConfig *config = [self.playerViewController.player getConfig];
-    config.userAgent = @"agent";
-    XCTAssertEqual(config.userAgent,@"agent",@"userAgent属性设置错误");
     
 }
 

@@ -9,6 +9,7 @@ FDK_AAC_SOURCE_DIR=
 X264_SOURCE_DIR=
 OPEN_SSL_SOURCE_DIR=
 CURL_SOURCE_DIR=
+DAV1D_SOURCE_DIR=
 ARES_SOURCE_DIR=
 RTMPDUMP_SOURCE_DIR=
 IOS_ARCHS="armv7 arm64 x86_64 i386"
@@ -22,7 +23,7 @@ BUILD=
 BUILD_FFMPEG=
 #BUILD_FFMPEG="False"
 
-if [ -f $PWD/user_env.sh ];then
+if [[ -f $PWD/user_env.sh ]];then
     source user_env.sh
 else
     print_error "user_env.sh not found"

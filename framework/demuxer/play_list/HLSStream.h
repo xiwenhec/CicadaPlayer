@@ -12,6 +12,7 @@
 #include "AbstractStream.h"
 #include "SegmentTracker.h"
 #include "../demuxer_service.h"
+#include "demuxer/DemuxerMetaInfo.h"
 #include <condition_variable>
 #include <deque>
 #include <mutex>
@@ -20,6 +21,24 @@
 
 namespace Cicada {
     class HLSStream : public AbstractStream {
+
+        class WebVttParser {
+
+        public:
+            WebVttParser();
+
+            ~WebVttParser();
+
+            int64_t addBuffer(uint8_t *buffer, int size);
+
+            void rest();
+
+        private:
+            uint8_t *mBuffer = nullptr;
+            int mSize = 0;
+            int64_t mMapPTS = INT64_MIN;
+            bool bFinished = false;
+        };
 
     public:
         HLSStream(SegmentTracker *pTracker, int id);
@@ -77,6 +96,8 @@ namespace Cicada {
 
     private:
 
+        static const char *hls_id3;
+
         static int read_callback(void *arg, uint8_t *buffer, int size);
 
         static int Decrypter_read_callback(void *arg, uint8_t *buffer, int size);
@@ -108,15 +129,30 @@ namespace Cicada {
 
         CicadaJSONArray openInfoArray;
 
-        int openSegment(const string &uri);
+        int openSegment(const string &uri, int64_t start = INT64_MIN, int64_t end = INT64_MIN);
+
+        int tryOpenSegment(const string &uri, int64_t start, int64_t end);
+
+        int createDemuxer();
+
+        int readSegment(const uint8_t *buffer, int size);
+
+        int upDateInitSection();
+
+        int64_t seekSegment(off_t offset, int whence);
+
+        int updateSegment();
 
         bool updateIV() const;
 
         enum OpenType {
-            SegNum,SegPosition
+            SegNum, SegPosition
         };
 
         int reopenSegment(uint64_t num, OpenType openType);
+
+        int64_t getPackedStreamPTS();
+
     private:
 
         enum dataSourceStatus {
@@ -126,14 +162,18 @@ namespace Cicada {
         };
         SegmentTracker *mPTracker = nullptr;
         int mId = -1;
-        demuxer_service *mPDemuxer = nullptr;
+        std::unique_ptr<demuxer_service> mPDemuxer = nullptr;
         IDataSource *mPdataSource = nullptr;
         atomic_bool mIsOpened{false};
-        bool mIsEOS = false; //demuxer eos
+        atomic_bool mIsEOS{false}; //demuxer eos
         bool mIsDataEOS = false;
         bool mReopen = false;
-        bool mSwitchNeedBreak = false;
+        atomic_bool mSwitchNeedBreak{false};
         std::shared_ptr<segment> mCurSeg = nullptr;
+        std::shared_ptr<segment> mCurInitSeg{nullptr};
+        uint8_t *mInitSegBuffer{nullptr};
+        int64_t mInitSegSize{0};
+        int mInitSegPtr{0};
         std::atomic_bool mStopOnSegEnd{false};
         bool mLastReadSuccess{false};
         std::mutex mDataMutex;
@@ -145,7 +185,6 @@ namespace Cicada {
         int read_thread();
 
         std::atomic_int mError{0};
-        dataSourceStatus mDataSourceStatus = dataSource_status_invalid;
         int mDataSourceError = 0;
         int64_t mSeekPendingUs = -1;
         bool mIsOpened_internal = false;
@@ -166,6 +205,14 @@ namespace Cicada {
         };
 
         std::map<int, segmentTimeInfo> mStreamStartTimeMap;
+
+        int64_t mPacketFirstPts = INT64_MAX;
+
+        WebVttParser mWVTTParser;
+        int64_t mVttPtsOffSet = INT64_MIN;
+
+        std::unique_ptr<DemuxerMetaInfo> mDemuxerMeta = nullptr;
+        int OpenedStreamIndex = 0;
     };
 }
 

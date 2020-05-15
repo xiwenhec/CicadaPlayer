@@ -10,15 +10,22 @@ public:
     CicadaOCHelper(CicadaPlayer * player):mPlayer(player){}
     void getListener(playerListener &listener);
 
+    void setDelegate(__weak id<CicadaDelegate> innerDelegate) {
+        mInnerDelegate = innerDelegate;
+    }
+
     static CicadaTrackInfo* getCicadaTrackInfo(const StreamInfo *info);
     static CicadaImage * convertBitmapRGBA8ToUIImage(unsigned char *buffer, int width, int height);
 
 protected:
     static CicadaPlayer * getOCPlayer(void *userData);
+    static id<CicadaDelegate> getDelegate(void *userData);
 
     static void onError(int64_t code, const void *msg, /*void *extra, */void *userData);
 
     static void onEvent(int64_t code, const void *msg, /*void *extra, */void *userData);
+
+    static void onVideoRendered(int64_t theTimeMs, int64_t thePts, void *userData);
 
     static void onPrepared(void *userData);
 
@@ -68,6 +75,7 @@ protected:
 
 private:
     __weak CicadaPlayer * mPlayer = nullptr;
+    __weak id<CicadaDelegate> mInnerDelegate = nil;
 };
 
 

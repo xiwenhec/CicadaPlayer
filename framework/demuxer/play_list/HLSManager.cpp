@@ -243,18 +243,22 @@ namespace Cicada {
             if (i->mPFrame) {
                 if (pFrameOut == nullptr) {
                     pFrameOut = i->mPFrame.get();
-                } else if (i->mPFrame->getInfo().pts < pFrameOut->getInfo().pts) {
+                } else if (i->mPFrame->getInfo().dts < pFrameOut->getInfo().dts) {
                     pFrameOut = i->mPFrame.get();
                 }
             }
         }
 
         if (index != -1) {
+            pFrameOut = nullptr;
+
             for (auto &i : mStreamInfoList) {
-                if (i->mPFrame->getInfo().streamIndex == index) {
-                    pFrameOut = i->mPFrame.get();
-                    packet = move(i->mPFrame);
-                    break;
+                if (i->mPStream->isOpened() && i->selected && i->mPFrame == nullptr && !i->eos) {
+                    if (i->mPFrame->getInfo().streamIndex == index) {
+                        pFrameOut = i->mPFrame.get();
+                        packet = move(i->mPFrame);
+                        break;
+                    }
                 }
             }
         } else {
@@ -450,10 +454,12 @@ namespace Cicada {
 
             // 2. seek video first ,get the seekedUs
             type = STREAM_TYPE_VIDEO;
+            // TODO type use bit or
 
             for (auto &i : mStreamInfoList) {
                 if (i->selected) {
-                    if (i->mPStream->getStreamType() == type) {
+                    if (i->mPStream->getStreamType() == STREAM_TYPE_VIDEO || i->mPStream->getStreamType() == STREAM_TYPE_MIXED) {
+                        type = i->mPStream->getStreamType();
                         int64_t seekedUs = i->mPStream->seek(us, flags);
                         AF_LOGD("first seeked time is %lld --> %lld", us, seekedUs);
                         us = seekedUs;

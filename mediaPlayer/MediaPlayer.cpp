@@ -26,8 +26,7 @@ namespace Cicada {
 #define GET_PLAYER_HANDLE  playerHandle* handle = (playerHandle*)mPlayerHandle;
 #define GET_MEDIA_PLAYER MediaPlayer* player = (MediaPlayer*)userData;
 
-    class QueryListener : public AnalyticsQueryListener
-    {
+    class QueryListener : public AnalyticsQueryListener {
     public:
         explicit QueryListener(MediaPlayer *player)
         {
@@ -78,12 +77,12 @@ namespace Cicada {
     };
 
     MediaPlayer::MediaPlayer()
-        : MediaPlayer(*(AnalyticsCollectorFactory::Instance()))
+            : MediaPlayer(*(AnalyticsCollectorFactory::Instance()))
     {
     }
 
     MediaPlayer::MediaPlayer(IAnalyticsCollectorFactory &factory)
-        : mCollectorFactory(factory)
+            : mCollectorFactory(factory)
     {
         playerHandle *handle = CicadaCreatePlayer();
         mPlayerHandle = (void *) handle;
@@ -96,11 +95,13 @@ namespace Cicada {
         listener.Completion = completionCallback;
         listener.FirstFrameShow = firstFrameCallback;
         listener.VideoSizeChanged = videoSizeChangedCallback;
+        listener.VideoRendered = videoRenderedCallback;
         listener.PositionUpdate = currentPostionCallback;
         listener.BufferPositionUpdate = bufferPostionCallback;
         listener.LoadingStart = loadingStartCallback;
         listener.LoadingEnd = loadingEndCallback;
         listener.LoadingProgress = loadingProgressCallback;
+        listener.Seeking = PlayerSeeking;
         listener.SeekEnd = PlayerSeekEnd;
         listener.SubtitleShow = subtitleShowCallback;
         listener.SubtitleHide = subtitleHideCallback;
@@ -128,21 +129,23 @@ namespace Cicada {
 
     void MediaPlayer::dummyFunction(bool dummy)
     {
+#ifdef ENABLE_MUXER
         if (dummy) {
             FfmpegMuxer ffmpegMuxer("", "");
         }
+#endif
     }
 
     MediaPlayer::~MediaPlayer()
     {
         delete mQueryListener;
         delete mAbrManager;
-
+#ifdef ENABLE_CACHE_MODULE
         if (mCacheManager != nullptr) {
             delete mCacheManager;
             mCacheManager = nullptr;
         }
-
+#endif
         delete mAbrAlgo;
         playerHandle *handle = (playerHandle *) mPlayerHandle;
         delete mConfig;
@@ -159,6 +162,11 @@ namespace Cicada {
     {
         GET_PLAYER_HANDLE
         return CicadaGetMasterClockPts(handle);
+    }
+    void MediaPlayer::SetClockRefer(clockRefer cb, void *arg)
+    {
+        GET_PLAYER_HANDLE
+        return CicadaSetClockRefer(handle,cb,arg);
     }
 
     void MediaPlayer::abrChanged(int stream)
@@ -201,7 +209,7 @@ namespace Cicada {
     {
         GET_PLAYER_HANDLE
         string playUrl;
-
+#ifdef ENABLE_CACHE_MODULE
         if (mCacheConfig.mEnable) {
             if (mCacheManager != nullptr) {
                 delete mCacheManager;
@@ -211,20 +219,33 @@ namespace Cicada {
             mCacheManager = new CacheManager();
             mCacheManager->setCacheConfig(mCacheConfig);
             mCacheManager->setSourceUrl(url);
-            char value[MAX_OPT_VALUE_LENGTH] = {0};
+            char descriptionLen[MAX_OPT_VALUE_LENGTH] = {0};
+            CicadaGetOption(handle, "descriptionLen", descriptionLen);
+            int len = atoi(descriptionLen);
+            char *value = static_cast<char *>(malloc(len + 1));
+            memset(value, 0, len + 1);
             CicadaGetOption(handle, "description", value);
             mCacheManager->setDescription(value);
+            free(value);
             mCacheManager->setCacheFailCallback([this](int code, string msg) -> void {
                 AF_LOGE("Cache fail : code = %d , msg = %s", code, msg.c_str());
                 this->eventCallback(MEDIA_PLAYER_EVENT_CACHE_ERROR, msg.c_str(), this);
             });
-            mCacheManager->setCacheSuccessCallback([this]()->void{
+            mCacheManager->setCacheSuccessCallback([this]() -> void {
+                if (IsLoop()) {
+                    //if cache success and want play loop,
+                    // we set loop false to let onCompletion callback deal loop.
+                    CicadaSetLoop(static_cast<playerHandle *>(mPlayerHandle), false);
+                }
+
                 this->eventCallback(MEDIA_PLAYER_EVENT_CACHE_SUCCESS, nullptr, this);
             });
             ICacheDataSource *cacheDataSource = new PlayerCacheDataSource(mPlayerHandle);
             mCacheManager->setDataSource(cacheDataSource);
             playUrl = mCacheManager->init();
-        } else {
+        }else
+#endif
+        {
             playUrl = url;
         }
 
@@ -339,11 +360,11 @@ namespace Cicada {
         mAbrManager->Reset();
         mAbrManager->EnableAbr(false);
         mAbrAlgo->Clear();
-
+#ifdef ENABLE_CACHE_MODULE
         if (mCacheManager != nullptr) {
             mCacheManager->stop("cache stopped by stop");
         }
-
+#endif
         waitingForLoop = false;
         waitingForStart = false;
         GET_PLAYER_HANDLE
@@ -432,12 +453,13 @@ namespace Cicada {
         }
 
         //must
-        if (playerConfig.maxDelayTime < playerConfig.highBufferDuration) {
+        if ((0 < playerConfig.maxDelayTime)
+                && (playerConfig.maxDelayTime < playerConfig.highBufferDuration)) {
             playerConfig.highBufferDuration = playerConfig.maxDelayTime;
         }
 
-        if (playerConfig.startBufferDuration > playerConfig.highBufferDuration) {
-            playerConfig.startBufferDuration = playerConfig.highBufferDuration;
+        if (playerConfig.startBufferDuration > playerConfig.maxBufferDuration) {
+            playerConfig.startBufferDuration = playerConfig.maxBufferDuration;
         }
 
         //must
@@ -497,7 +519,7 @@ namespace Cicada {
 
         GET_PLAYER_HANDLE
         CicadaSetLoop(handle, bLoop);
-
+#ifdef ENABLE_CACHE_MODULE
         //if cache successed before setLoop.
         if (mCacheManager != nullptr) {
             CacheModule::CacheStatus cacheStatus = mCacheManager->getCacheStatus();
@@ -508,6 +530,7 @@ namespace Cicada {
                 CicadaSetLoop(handle, false);
             }
         }
+#endif
     }
 
     bool MediaPlayer::IsLoop()
@@ -572,6 +595,12 @@ namespace Cicada {
     {
         GET_PLAYER_HANDLE
         return CicadaGetMirrorMode(handle);
+    }
+
+    void MediaPlayer::SetVideoBackgroundColor(uint32_t color)
+    {
+        GET_PLAYER_HANDLE
+        CicadaSetVideoBackgroundColor(handle, color);
     }
 
     void MediaPlayer::SetSpeed(float speed)
@@ -645,7 +674,7 @@ namespace Cicada {
     void MediaPlayer::completionCallback(void *userData)
     {
         GET_MEDIA_PLAYER
-
+#ifdef ENABLE_CACHE_MODULE
         if (player->mCacheManager != nullptr) {
             CacheModule::CacheStatus cacheStatus = player->mCacheManager->getCacheStatus();
             bool isLoop = player->IsLoop();
@@ -667,7 +696,7 @@ namespace Cicada {
                 return;
             }
         }
-
+#endif
         if (player->mCollector) {
             player->mCollector->ReportCompletion();
         }
@@ -698,8 +727,9 @@ namespace Cicada {
 
         if (player->mOldPlayStatus < PLAYER_PREPARED) {
             //if play cache file , we try prepare the orignal url.
+#ifdef ENABLE_CACHE_MODULE
             if (player->mCacheManager != nullptr) {
-                string sourceUrl          = player->mCacheManager->getSourceUrl();
+                string sourceUrl = player->mCacheManager->getSourceUrl();
                 player->mCacheManager->stop("cache stopped by error");
 
                 if (sourceUrl != player->mPlayUrl) {
@@ -711,6 +741,7 @@ namespace Cicada {
                     }
                 }
             }
+#endif
         }
 
         if (player->mCollector) {
@@ -731,16 +762,11 @@ namespace Cicada {
                 player->mCollector->ReportSwitchToSoftDecode();
             }
         } else if (code == MediaPlayerEventType::MEDIA_PLAYER_EVENT_DEMUXER_EOF) {
+#ifdef ENABLE_CACHE_MODULE
             if (player->mCacheManager != nullptr) {
                 player->mCacheManager->complete();
-                CacheModule::CacheStatus cacheStatus = player->mCacheManager->getCacheStatus();
-
-                if (cacheStatus == CacheModule::CacheStatus::success && player->IsLoop()) {
-                    //if cache success and want play loop,
-                    // we set loop false to let onCompletion callback deal loop.
-                    CicadaSetLoop(static_cast<playerHandle *>(player->mPlayerHandle), false);
-                }
             }
+#endif
         }
 
         if (player->mListener.EventCallback) {
@@ -760,6 +786,16 @@ namespace Cicada {
             player->mCollector->ReportVideoSizeChanged(static_cast<int>(width), static_cast<int>(height));
         }
     }
+
+    void MediaPlayer::videoRenderedCallback(int64_t timeMs, int64_t pts, void *userData)
+    {
+        GET_MEDIA_PLAYER
+
+        if (player->mListener.VideoRendered) {
+            player->mListener.VideoRendered(timeMs, pts, player->mListener.userData);
+        }
+    }
+
 
     void MediaPlayer::currentPostionCallback(int64_t position, void *userData)
     {
@@ -870,6 +906,17 @@ namespace Cicada {
         }
     }
 
+    void MediaPlayer::PlayerSeeking(int64_t seekInCache, void *userData)
+    {
+        GET_MEDIA_PLAYER
+#ifdef ENABLE_CACHE_MODULE
+        if (player->mCacheManager != nullptr && seekInCache == 0) {
+                //not seek in cache
+            player->mCacheManager->stop("cache stopped by seek");
+        }
+#endif
+    }
+
     void MediaPlayer::PlayerSeekEnd(int64_t seekInCache, void *userData)
     {
         GET_MEDIA_PLAYER
@@ -881,12 +928,6 @@ namespace Cicada {
         //when seek, reset and open abrmanager
         player->mAbrManager->Reset();
         player->mAbrManager->Start();
-
-        if (player->mCacheManager != nullptr && seekInCache == 0) {
-            //not seek in cache
-            player->mCacheManager->stop("cache stopped by seek");
-        }
-
         if (player->mCollector) {
             player->mCollector->ReportSeekEnd();
         }
@@ -903,7 +944,7 @@ namespace Cicada {
 
         if (player->mCollector)
             player->mCollector->ReportPlayerStatueChange(static_cast<PlayerStatus>(oldStatus),
-                    static_cast<PlayerStatus>(newStatus));
+                                                         static_cast<PlayerStatus>(newStatus));
     }
 
     void MediaPlayer::captureScreenResult(int64_t width, int64_t height, const void *buffer, void *userData)
@@ -1004,6 +1045,7 @@ namespace Cicada {
 
     void MediaPlayer::SetCacheConfig(const CacheConfig &config)
     {
+#ifdef ENABLE_CACHE_MODULE
         if (!mCacheConfig.isSame(config)) {
             if (mCacheManager != nullptr) {
                 mCacheManager->stop("cache stopped by change config");
@@ -1011,11 +1053,15 @@ namespace Cicada {
 
             mCacheConfig = config;
         }
+#endif
     }
 
     string MediaPlayer::GetCachePathByURL(const string &URL)
     {
+#ifdef ENABLE_CACHE_MODULE
         return CacheManager::getCachePath(URL, mCacheConfig);
+#endif
+        return "";
     }
 
     void MediaPlayer::AddExtSubtitle(const char *uri)
@@ -1035,23 +1081,44 @@ namespace Cicada {
         mPlayUrlChangedCallback = urlChangedCallbak;
     }
 
-    void MediaPlayer::onMediaFrameCallback(void *arg, const unique_ptr<IAFPacket>& frame, StreamType type)
+    void MediaPlayer::onMediaFrameCallback(void *arg, const unique_ptr<IAFPacket> &frame, StreamType type)
     {
-        MediaPlayer *player = (MediaPlayer *)arg;
+        MediaPlayer *player = (MediaPlayer *) arg;
+
         if (nullptr == player) {
             return;
         }
+
         player->mediaFrameCallback(frame, type);
     }
 
-    void MediaPlayer::mediaFrameCallback(const unique_ptr<IAFPacket>& frame, StreamType type)
+    void MediaPlayer::mediaFrameCallback(const unique_ptr<IAFPacket> &frame, StreamType type)
     {
+#ifdef ENABLE_CACHE_MODULE
         if (mCacheManager) {
             mCacheManager->sendMediaFrame(frame, type);
         }
-
+#endif
         if (mMediaFrameFunc) {
             mMediaFrameFunc(mMediaFrameArg, frame, type);
         }
+    }
+
+
+    void MediaPlayer::EnableVideoRenderedCallback(bool enable)
+    {
+        GET_PLAYER_HANDLE;
+        CicadaSetOption(handle, "enableVRC", enable ? "1" : "0");
+    }
+
+    void MediaPlayer::SetOnRenderFrameCallback(onRenderFrame cb, void *userData)
+    {
+        GET_PLAYER_HANDLE;
+        CicadaSetOnRenderCallBack(handle, cb, userData);
+    }
+    void MediaPlayer::SetStreamTypeFlags(uint64_t flags)
+    {
+        GET_PLAYER_HANDLE;
+        CicadaSetOption(handle, "streamTypes", to_string(flags).c_str());
     }
 }

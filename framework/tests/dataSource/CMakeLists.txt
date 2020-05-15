@@ -10,6 +10,8 @@ if (APPLE)
         include(../Apple.cmake)
 endif ()
 
+include(../../${TARGET_PLATFORM}.cmake)
+
 cmake_policy(SET CMP0079 NEW)
 add_executable(dataSourceTest "")
 
@@ -22,7 +24,9 @@ target_include_directories(
         dataSourceTest
         PRIVATE
         ../../../plugin
-        )
+        ../../
+        ${COMMON_INC_DIR}
+)
 
 target_link_libraries(dataSourceTest PRIVATE
         demuxer
@@ -37,9 +41,10 @@ target_link_libraries(dataSourceTest PRIVATE
         swscale
         z
         curl
-        ssl
-        crypto
         gtest_main)
+
+
+target_link_directories(dataSourceTest PRIVATE ${COMMON_LIB_DIR})
 if (APPLE)
         target_link_libraries(
                 dataSourceTest PUBLIC
@@ -51,6 +56,8 @@ else ()
         target_link_libraries(
                 dataSourceTest PUBLIC
                 dl
+                ssl
+                crypto
                 pthread
         )
 

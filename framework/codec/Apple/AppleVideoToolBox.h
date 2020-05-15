@@ -38,9 +38,10 @@ namespace Cicada{
 
         void flush_decoder() override;
 
+        int get_decoder_recover_size() override;
+
         void flushReorderQueue();
 
-    private:
     private:
         explicit AFVTBDecoder(int dummy)
         {
@@ -100,25 +101,27 @@ namespace Cicada{
         CM_NULLABLE VTDecompressionSessionRef mVTDecompressSessionRef{nullptr};
         CM_NULLABLE CMVideoFormatDescriptionRef mVideoFormatDesRef{nullptr};
         CM_NULLABLE CFDictionaryRef mDecoder_spec{nullptr};
+        const static int MAX_POC_ERROR = 3;
         CMVideoCodecType mVideoCodecType{0};
         std::map<int64_t, std::unique_ptr<PBAFFrame>> mReorderFrameMap;
         int mInputCount{0};
         bool mThrowPacket{false};
         std::mutex mActiveStatusMutex;
-        bool mActive{true};
-        pix_fmt mVTOutFmt = AF_PIX_FMT_NONE;
+        std::atomic_bool mActive{true};
+        AFPixelFormat mVTOutFmt = AF_PIX_FMT_NONE;
         std::unique_ptr<streamMeta> mPInMeta{nullptr};
         std::queue<std::unique_ptr<IAFPacket>> mRecoveryQueue{};
         std::queue<std::unique_ptr<IAFPacket>> mRecoveringQueue{};
         std::unique_ptr<bitStreamParser> mParser{nullptr};
         uint8_t mPocDelta = 2;
-        int64_t mOutputPoc = 0;
+        std::atomic_int64_t mOutputPoc {0};
         bool mBUsePoc = false;
         std::queue<std::unique_ptr<IAFFrame>> mReorderedQueue{};
         std::mutex mReorderMutex{};
 
-        bool mResignActiveFromRunning{false};
+        bool mResignActive{false};
         bool mIsDummy = false;
+        int mPocErrorCount{0};
     };
 
 }

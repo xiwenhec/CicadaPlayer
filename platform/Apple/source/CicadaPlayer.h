@@ -8,11 +8,13 @@
 
 #import <Foundation/Foundation.h>
 #import "CicadaDelegate.h"
+#import "CicadaRenderDelegate.h"
 #import "CicadaSource.h"
 #import "CicadaDef.h"
 #import "CicadaMediaInfo.h"
 #import "CicadaConfig.h"
 #import "CicadaCacheConfig.h"
+#import "CicadaAudioSessionDelegate.h"
 
 OBJC_EXPORT
 @interface CicadaPlayer : NSObject
@@ -116,6 +118,16 @@ OBJC_EXPORT
  @see CicadaSeekMode
  */
 -(void)seekToTime:(int64_t)time seekMode:(CicadaSeekMode)seekMode;
+
+/**
+ * 设置精准seek的最大间隔。
+ * @param delta 间隔时间，单位毫秒
+ */
+/****
+* set the maximum interval of precision seek.
+* @param delta interval in milliseconds
+*/
+-(void)setMaxAccurateSeekDelta:(int)delta;
 
 /**
  @brief 截图 CicadaImage: mac平台返回NSImage，iOS平台返回UIImage
@@ -266,6 +278,61 @@ OBJC_EXPORT
 -(NSString *) getPropertyString:(CicadaPropertyKey)key;
 
 /**
+ @brief 设置多码率时默认播放的码率。将会选择与之最接近的一路流播放。
+ @param bandWidth 播放的码率。
+ */
+/****
+ @brief Set the default playback bitrate for multi-bit rate. The nearest stream will be selected.
+ @param bandWidth bit rate .
+ */
+-(void) setDefaultBandWidth:(int)bandWidth;
+
+/**
+ @brief 设置所需的播放内容。
+ @param CicadaPlaybackType 指定播放音频或视频。
+ */
+/****
+ @brief Set the playback track.
+ @param CicadaPlaybackType The specified track to playback.
+ */
+-(void) setPlaybackType:(CicadaPlaybackType)type;
+
+/**
+ @brief 获取当前播放的pts。
+ @return 当前播放的pts。
+ */
+/****
+ @brief Get playing pts.
+ @return Playing pts.
+ */
+-(int64_t) getPlayingPts;
+
+
+/**
+ @brief 设置参考时间钟。
+ @param referClock 参考时间钟。
+ */
+/****
+ @brief Set the refer clock
+ @param referClock The refer clock
+ */
+-(void) SetClockRefer:(int64_t (^)(void))referClock;
+
+/**
+ * @brief 获取播放器的参数
+ *
+ * @param key 参数值
+ * @return 相关信息
+ */
+/****
+ * @brief Get player information
+ *
+ * @param key The key
+ * @return The information
+ */
+-(NSString *) getOption:(CicadaOption)key;
+
+/**
  @brief 获取SDK版本号信息
  */
 /****
@@ -397,10 +464,10 @@ OBJC_EXPORT
 @property (nonatomic, readonly) int rotation;
 
 /**
- @brief 获取/设置播放器的音量，支持KVO
+ @brief 获取/设置播放器的音量（非系统音量），支持KVO，范围0.0~2.0，当音量大于1.0时，可能出现噪音，不推荐使用。
  */
 /****
- @brief Query or set the volume of the player. KVO is supported.
+ @brief Query or set the volume of the player(Not system volume). KVO is supported. The range is 0.0~2.0，it maybe lead to noise if set volume more then 1.0, not recommended.
  */
 @property (nonatomic, assign) float volume;
 
@@ -437,6 +504,23 @@ OBJC_EXPORT
  @see CicadaDelegate
  */
 @property (nonatomic, weak) id<CicadaDelegate> delegate;
+
+/**
+ * 设置渲染回调。
+ */
+@property(nonatomic, weak) id <CicadaRenderDelegate> renderDelegate;
+
+- (void)setInnerDelegate:(id<CicadaDelegate>) delegate;
+
+/**
+ @brief 设置AudioSession的Delegate
+ @param delegate Delegate对象
+ */
+/****
+ @brief 设置AudioSession的Delegate
+ @param delegate Delegate对象
+ */
++ (void)setAudioSessionDelegate:(id<CicadaAudioSessionDelegate>)delegate;
 
 /**
  @brief 设置日志打印回调block，异步

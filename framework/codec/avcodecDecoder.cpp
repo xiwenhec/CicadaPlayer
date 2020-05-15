@@ -234,7 +234,8 @@ namespace Cicada {
         }
 
         if (mPDecoder->avFrame->decode_error_flags || mPDecoder->avFrame->flags) {
-            AF_LOGW("get a error picture\n");
+            AF_LOGW("get a error frame\n");
+            return -EAGAIN;
         }
 
 #ifdef ENABLE_HWDECODER
@@ -251,7 +252,7 @@ namespace Cicada {
     int avcodecDecoder::enqueue_decoder(unique_ptr<IAFPacket> &pPacket)
     {
         int ret;
-        const AVPacket *pkt = nullptr;
+        AVPacket *pkt = nullptr;
 
         if (pPacket) {
             auto *avAFPacket = dynamic_cast<AVAFPacket *>(pPacket.get());
@@ -261,6 +262,8 @@ namespace Cicada {
                 // TODO: tobe impl
             } else {
                 pkt = avAFPacket->ToAVPacket();
+                pkt->pts = pPacket->getInfo().pts;
+                pkt->dts = pPacket->getInfo().dts;
                 assert(pkt != nullptr);
             }
         }
@@ -272,6 +275,7 @@ namespace Cicada {
         ret = avcodec_send_packet(mPDecoder->codecCont, pkt);
 
         if (0 == ret) {
+            pPacket = nullptr;
         } else if (ret == AVERROR(EAGAIN)) {
         } else if (ret == AVERROR_EOF) {
             AF_LOGD("Decode EOF\n");

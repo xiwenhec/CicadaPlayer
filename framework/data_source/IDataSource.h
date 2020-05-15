@@ -11,7 +11,7 @@
 #include <vector>
 #include <atomic>
 
-namespace Cicada{
+namespace Cicada {
 
     enum {
         SEEK_SIZE = 0x10000,
@@ -28,7 +28,9 @@ namespace Cicada{
             };
 
             virtual NetWorkRetryStatus onNetWorkRetry(int error) = 0;
-            virtual void onNetWorkConnected(){
+
+            virtual void onNetWorkConnected()
+            {
             }
         };
 
@@ -40,6 +42,9 @@ namespace Cicada{
 
         class SourceConfig {
         public:
+            enum IpResolveType { IpResolveWhatEver, IpResolveV4, IpResolveV6 };
+
+        public:
             int low_speed_limit{1};
             int low_speed_time_ms{15000};
 //        int64_t max_time_ms{0};
@@ -50,12 +55,17 @@ namespace Cicada{
             std::string userAgent = "";
             std::vector<std::string> customHeaders;
             Listener *listener = nullptr;
+            IpResolveType resolveType{IpResolveWhatEver};
+
+            std::string toString();
         };
 
 
         explicit IDataSource(std::string url);
 
         virtual ~IDataSource() = default;
+
+        virtual int setRange(int64_t start, int64_t end);
 
         virtual int Open(int flags) = 0;
 
@@ -88,6 +98,8 @@ namespace Cicada{
         std::atomic_bool mInterrupt{false};
         SourceConfig mConfig{};
         std::string mUri{};
+        int64_t rangeStart{INT64_MIN};
+        int64_t rangeEnd{INT64_MIN};
 
     };
 }

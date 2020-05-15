@@ -25,6 +25,9 @@ void CicadaReleasePlayer(playerHandle **player);
  */
 int CicadaSetListener(playerHandle *pHandle, const playerListener &Listener);
 
+
+void CicadaSetOnRenderCallBack(playerHandle *pHandle, onRenderFrame cb, void *userData);
+
 /*
  * set external component callback
  */
@@ -73,6 +76,8 @@ void CicadaRemoveAllCustomHttpHeader(playerHandle *pHandle);
 void CicadaCaptureScreen(playerHandle *pHandle);
 
 int64_t CicadaGetMasterClockPts(playerHandle *pHandle);
+
+void CicadaSetClockRefer(playerHandle *pHandle,clockRefer cb, void *arg);
 
 /*
 * prepare to play
@@ -203,6 +208,11 @@ RotateMode CicadaGetRotateMode(playerHandle *player);
  * set rending mirror mode .
  */
 void CicadaSetMirrorMode(playerHandle *pHandle, MirrorMode mode);
+
+/*
+ * set clear color
+ */
+void CicadaSetVideoBackgroundColor(playerHandle *pHandle, uint32_t color);
 
 /**
  * get rending mirror mode

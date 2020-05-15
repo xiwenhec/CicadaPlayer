@@ -7,6 +7,7 @@
 #include <utility>
 #include <utils/mediaTypeInternal.h>
 #include <vector>
+#include <utils/mediaFrame.h>
 
 CacheManager::CacheManager()
 {
@@ -88,7 +89,11 @@ void CacheManager::sendMediaFrame(const unique_ptr<IAFPacket> &frame, StreamType
             metaRet = mDataSource->getStreamMeta(videoMeta, StreamType::ST_TYPE_VIDEO);
 
             if (metaRet == 0) {
+                videoMeta->type = Stream_type::STREAM_TYPE_VIDEO;
                 streamMetas.push_back(videoMeta);
+            }else {
+                releaseMeta(videoMeta);
+                free(videoMeta);
             }
         }
         {
@@ -97,16 +102,31 @@ void CacheManager::sendMediaFrame(const unique_ptr<IAFPacket> &frame, StreamType
             metaRet = mDataSource->getStreamMeta(audioMeta, StreamType::ST_TYPE_AUDIO);
 
             if (metaRet == 0) {
+                audioMeta->type = Stream_type::STREAM_TYPE_AUDIO;
                 streamMetas.push_back(audioMeta);
+            } else {
+                releaseMeta(audioMeta);
+                free(audioMeta);
             }
         }
         mCacheModule.setStreamMeta(streamMetas);
         mCacheModule.setErrorCallback([this](int code, string msg) -> void{
             AF_LOGE("cacheModule error : code = %d , msg = %s ", code, msg.c_str());
+            mNeedProcessFrame = false;
 
-            if (mCacheFailCallback != nullptr)
-            {
+            if (mCacheFailCallback != nullptr) {
                 mCacheFailCallback(code, msg);
+            }
+        });
+        mCacheModule.setResultCallback([this](bool success) -> void {
+            if (success) {
+                if (mCacheSuccessCallback != nullptr) {
+                    mCacheSuccessCallback();
+                }
+            } else {
+                if (mCacheFailCallback != nullptr) {
+                    mCacheFailCallback(-1, mStopReason);
+                }
             }
         });
         const CacheRet &startRet = mCacheModule.start();
@@ -125,36 +145,18 @@ void CacheManager::sendMediaFrame(const unique_ptr<IAFPacket> &frame, StreamType
     mCacheModule.addFrame(frame, type);
 }
 
-
-
 void CacheManager::stop(const string &reason)
 {
-    mCacheModule.stop();
-    CacheModule::CacheStatus status = mCacheModule.getCacheStatus();
     mNeedProcessFrame = false;
-    mCacheModule.reset();
 
-    if (status == CacheModule::CacheStatus::fail) {
-        if (mCacheFailCallback != nullptr) {
-            mCacheFailCallback(-1, reason);
-        }
-    }
+    std::unique_lock<mutex> lock(mStopMutex);
+    mStopReason = reason;
+    mCacheModule.stop();
 }
 
 void CacheManager::complete()
 {
-    if (mCacheConfig.mEnable) {
-        mCacheModule.streamEnd();
-        CacheModule::CacheStatus cacheStatus = mCacheModule.getCacheStatus();
-
-        if (cacheStatus == CacheModule::success) {
-            if (mCacheSuccessCallback != nullptr) {
-                mCacheSuccessCallback();
-            }
-        }
-
-        AF_LOGD("eventCallback ==== cacheComplete cacheSuccess is %d", cacheStatus);
-    }
+    mCacheModule.streamEnd();
 }
 
 CacheModule::CacheStatus CacheManager::getCacheStatus()

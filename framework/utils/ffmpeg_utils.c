@@ -88,18 +88,19 @@ static void ffmpeg_log_back(void *ptr, int level, const char *fmt, va_list vl)
     __log_print(AF_LOG_LEVEL_DEBUG, "FFMPEG", "%s", line);
 }
 
+static void ffmpeg_init_once()
+{
+    av_lockmgr_register(lockmgr);
+    av_log_set_level(AV_LOG_INFO);
+    av_log_set_callback(ffmpeg_log_back);
+    av_register_all();
+    avformat_network_init();
+}
+
 void ffmpeg_init()
 {
-    static bool inited = false;
-
-    if (!inited) {
-        inited = true;
-        av_lockmgr_register(lockmgr);
-        av_log_set_level(AV_LOG_INFO);
-        av_log_set_callback(ffmpeg_log_back);
-        av_register_all();
-        avformat_network_init();
-    }
+    static pthread_once_t once;
+    pthread_once(&once, ffmpeg_init_once);
 }
 
 void ffmpeg_deinit()
@@ -156,8 +157,8 @@ enum AFCodecID AVCodec2CicadaCodec(enum AVCodecID codec)
             return AF_CODEC_ID_AC3;
 
 //
-//        case AV_CODEC_ID_EAC3:
-//            return AF_CODEC_ID_EAC3;
+        case AV_CODEC_ID_EAC3:
+            return AF_CODEC_ID_EAC3;
 
         case AV_CODEC_ID_MP3:
             return AF_CODEC_ID_MP3;
@@ -223,6 +224,9 @@ enum AFCodecID AVCodec2CicadaCodec(enum AVCodecID codec)
 //        case AV_CODEC_ID_FLAC:
 //            return AF_CODEC_ID_FLAC;
 
+        case AV_CODEC_ID_OPUS:
+            return AF_CODEC_ID_OPUS;
+
         /*Video*/
         case AV_CODEC_ID_H264:
             return AF_CODEC_ID_H264;
@@ -272,8 +276,12 @@ enum AFCodecID AVCodec2CicadaCodec(enum AVCodecID codec)
 //        case AV_CODEC_ID_VP6F:
 //            return AF_CODEC_ID_VP6;
 //
-//        case AV_CODEC_ID_VP8:
-//            return AF_CODEC_ID_VP8;
+        case AV_CODEC_ID_VP8:
+            return AF_CODEC_ID_VP8;
+
+        case AV_CODEC_ID_VP9:
+            return AF_CODEC_ID_VP9;
+
 //
 //        case AV_CODEC_ID_MJPEG:
 //            return AF_CODEC_ID_MJPEG;
@@ -283,6 +291,9 @@ enum AFCodecID AVCodec2CicadaCodec(enum AVCodecID codec)
 
         case AV_CODEC_ID_HEVC:
             return AF_CODEC_ID_HEVC;
+
+        case AV_CODEC_ID_AV1:
+            return AF_CODEC_ID_AV1;
 
         /* subtitle */
 //        case AV_CODEC_ID_TEXT:
@@ -312,7 +323,7 @@ typedef struct codec_pair_t {
 static codec_pair codec_pair_table[] = {
     {AF_CODEC_ID_AAC,       AV_CODEC_ID_AAC},
     {AF_CODEC_ID_AC3,       AV_CODEC_ID_AC3},
-//    {AF_CODEC_ID_EAC3,      AV_CODEC_ID_EAC3},
+    {AF_CODEC_ID_EAC3,      AV_CODEC_ID_EAC3},
     {AF_CODEC_ID_MP3,       AV_CODEC_ID_MP3},
     {AF_CODEC_ID_MP2,       AV_CODEC_ID_MP2},
     {AF_CODEC_ID_MP1,       AV_CODEC_ID_MP1},
@@ -322,6 +333,10 @@ static codec_pair codec_pair_table[] = {
 //    {AF_CODEC_ID_FLAC,      AV_CODEC_ID_FLAC},
     {AF_CODEC_ID_H264,      AV_CODEC_ID_H264},
     {AF_CODEC_ID_HEVC,      AV_CODEC_ID_HEVC},
+    {AF_CODEC_ID_AV1,       AV_CODEC_ID_AV1},
+    {AF_CODEC_ID_VP8,       AV_CODEC_ID_VP8},
+    {AF_CODEC_ID_VP9,       AV_CODEC_ID_VP9},
+    {AF_CODEC_ID_OPUS,      AV_CODEC_ID_OPUS},
     {AF_CODEC_ID_MPEG4,     AV_CODEC_ID_MPEG4},
     {AF_CODEC_ID_NONE,      AV_CODEC_ID_NONE},
 };
@@ -343,13 +358,14 @@ enum AVCodecID CodecID2AVCodecID(enum AFCodecID codec)
 
 
 typedef struct pix_fmt_pair_t {
-    enum pix_fmt klId;
+    enum AFPixelFormat klId;
     enum AVPixelFormat avId;
 } pix_fmt_pair;
 
 static pix_fmt_pair pix_fmt_pair_table[] = {
     {AF_PIX_FMT_NONE,      AV_PIX_FMT_NONE},
     {AF_PIX_FMT_YUV420P,   AV_PIX_FMT_YUV420P},
+    {AF_PIX_FMT_YUV422P,   AV_PIX_FMT_YUV422P},
     {AF_PIX_FMT_YUVJ420P,  AV_PIX_FMT_YUVJ420P},
     {AF_PIX_FMT_YUVJ422P,  AV_PIX_FMT_YUVJ422P},
     {AF_PIX_FMT_D3D11,     AV_PIX_FMT_D3D11},
@@ -404,6 +420,60 @@ int AVColorRange2AF(enum AVColorRange range)
     }
 }
 
+int set_stream_meta(struct AVStream *pStream, Stream_meta *meta)
+{
+    AVCodecParameters *codecpar = pStream->codecpar;
+
+    switch (meta->type) {
+        case STREAM_TYPE_VIDEO:
+            if (meta->height > 0 && meta->width > 0) {
+                codecpar->height = meta->height;
+                codecpar->width = meta->width;
+            }
+
+            if (meta->pixel_fmt >= 0) {
+                codecpar->format = meta->pixel_fmt;
+            }
+
+            pStream->r_frame_rate = av_d2q(meta->avg_fps, 1000);
+            break;
+
+        case STREAM_TYPE_AUDIO:
+            if (meta->channels > 0) {
+                codecpar->channels = meta->channels;
+            }
+
+            if (meta->samplerate > 0) {
+                codecpar->sample_rate = meta->samplerate;
+            }
+
+            if (meta->sample_fmt > 0) {
+                codecpar->format = meta->sample_fmt;
+            }
+
+            if (meta->frame_size > 0) {
+                codecpar->frame_size = meta->frame_size;
+            }
+
+            break;
+
+        default:
+            break;
+    }
+
+    if (meta->extradata_size > 0 && meta->extradata) {
+        if (codecpar->extradata) {
+            free(codecpar->extradata);
+        }
+
+        codecpar->extradata = av_mallocz(meta->extradata_size + AVPROBE_PADDING_SIZE);
+        memcpy(codecpar->extradata, meta->extradata, meta->extradata_size);
+        codecpar->extradata_size = meta->extradata_size;
+    }
+
+    return 0;
+}
+
 int get_stream_meta(struct AVStream *pStream, Stream_meta *meta)
 {
     enum AVMediaType codec_type = pStream->codecpar->codec_type;
@@ -451,6 +521,7 @@ int get_stream_meta(struct AVStream *pStream, Stream_meta *meta)
         meta->width = pStream->codecpar->width;
         meta->height = pStream->codecpar->height;
         meta->profile = pStream->codecpar->profile;
+        meta->pixel_fmt = pStream->codecpar->format;
 
         if (meta->codec == AF_CODEC_ID_H264) {
             meta->interlaced = InterlacedType_UNKNOWN;

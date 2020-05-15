@@ -35,6 +35,12 @@ include(${TOPDIR}/framework/${TARGET_PLATFORM}.cmake)
 
 set(CMAKE_CXX_STANDARD 11)
 
+include(../framework/module_config.cmake)
+
+if (ENABLE_CACHE_MODULE)
+    add_definitions(-DENABLE_CACHE_MODULE)
+endif ()
+
 message("COMMON_INC_DIR is ${COMMON_INC_DIR}")
 
 set(SOURCE_FILES
@@ -115,7 +121,7 @@ endif ()
 
 if (TARGET_PLATFORM STREQUAL "windows")
 else ()
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inconsistent-missing-override -frtti")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inconsistent-missing-override")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -U_FORTIFY_SOURCE -fstack-protector-all")
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -fstack-protector-all")
 endif ()
@@ -132,9 +138,5 @@ target_include_directories(media_player PUBLIC
         ./)
 if (HAVE_COVERAGE_CONFIG)
     target_link_libraries(media_player PUBLIC coverage_config)
-endif ()
-
-if (BUILD_TEST)
-    add_subdirectory(tests)
 endif ()
 

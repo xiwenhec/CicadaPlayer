@@ -12,7 +12,6 @@ add_subdirectory(../../../../plugin plugin.out)
 
 include_directories(
         ${COMMON_INC_DIR}
-        ${ALITUN_INC_DIR}
         ${TOPDIR}/mediaPlayer/
         ${TOPDIR}/mediaPlayer/external/install/cares/Android/${ANDROID_ABI}/include
 )
@@ -20,7 +19,6 @@ include_directories(
 link_directories(
         ${BOOST_LIB_DIR}
         ${COMMON_LIB_DIR}
-        ${ALITUN_LIB_DIR}
 )
 
 #set(CMAKE_CXX_VISIBILITY_PRESET hidden)
@@ -38,6 +36,7 @@ add_library(CicadaPlayer SHARED
         src/main/jni/player/NativeBase.cpp
         src/main/jni/player/JavaTrackInfo.cpp
         src/main/jni/player/JavaMediaInfo.cpp
+        src/main/jni/player/JavaGlobalSettings.cpp
         src/main/jni/utils/JavaLogger.cpp
 
         )
@@ -62,7 +61,7 @@ target_link_libraries(CicadaPlayer
         ${log-lib}
         )
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inconsistent-missing-override -frtti")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-inconsistent-missing-override")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -U_FORTIFY_SOURCE -fstack-protector-all")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -U_FORTIFY_SOURCE -fstack-protector-all")
 

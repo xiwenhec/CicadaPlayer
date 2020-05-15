@@ -9,11 +9,11 @@
 #include <MediaPlayer.h>
 #include <memory>
 #ifdef ENABLE_SDL
-#include <SDL2/SDL.h>
 #include "SDLEventReceiver.h"
+#include <SDL2/SDL.h>
 #endif
-#include <utils/timer.h>
 #include "IEventReceiver.h"
+#include <utils/timer.h>
 
 
 class cicadaEventListener : public IEventReceiver::Listener {
@@ -31,16 +31,22 @@ public:
 
     void onStepSeek(bool forward) override;
 
+    void onPercentageSeek(int percent) override;
+
     void onChangeVolume(bool large) override;
 
     void onSetView(void *view) override;
 
     void onSpeedUp(bool up) override;
 
-private:
+    void onPrePare() override;
+
+    void onFullScreen(bool full) override;
+
+protected:
     Cicada::MediaPlayer *mediaPlayer;
     bool paused = false;
 };
 
 
-#endif //CICADAMEDIA_CICADAEVENTLISTENER_H
+#endif//CICADAMEDIA_CICADAEVENTLISTENER_H
